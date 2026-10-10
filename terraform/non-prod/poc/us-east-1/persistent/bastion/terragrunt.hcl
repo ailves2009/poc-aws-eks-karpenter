@@ -35,8 +35,14 @@ inputs = {
   # manually in your authoritative zone (e.g. example.com).
   create_dns_record = false
 
-  # Lock down to your office/home IP. Find with `curl ifconfig.me`.
-  # The placeholder below is intentionally invalid — apply will fail until
-  # you replace it with a real CIDR.
-  allowed_cidrs = ["YOUR.PUBLIC.IP.HERE/32"]
+  # Lock down to your office/home IP, passed via env so it is never committed:
+  #   export BASTION_ALLOWED_CIDRS="$(curl -s https://checkip.amazonaws.com)/32"
+  # (comma-separated for several). Without it the placeholder is used and
+  # apply fails on the invalid CIDR — intentionally.
+  allowed_cidrs = split(",", get_env("BASTION_ALLOWED_CIDRS", "YOUR.PUBLIC.IP.HERE/32"))
+
+  # Optional EC2 key pair: put an OpenSSH public key into bastion.pub next to
+  # this file (see runbooks/bastion-access.md). Adding, changing or removing
+  # it replaces the instance.
+  ssh_public_key = fileexists("${get_terragrunt_dir()}/bastion.pub") ? trimspace(file("${get_terragrunt_dir()}/bastion.pub")) : ""
 }
