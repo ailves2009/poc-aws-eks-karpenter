@@ -1,55 +1,29 @@
-# /envs/main/poc/bootstrap/s3-state/terragrunt.hcl
+# /non-prod/poc/us-east-1/bootstrap/s3-state/terragrunt.hcl
+
+include "bootstrap" {
+  path = find_in_parent_folders("bootstrap.hcl")
+}
 
 locals {
   account_vars = read_terragrunt_config(find_in_parent_folders("account.hcl"))
-  region_vars  = read_terragrunt_config(find_in_parent_folders("region.hcl"))
-  region       = local.region_vars.locals.aws_region
-  tags         = local.account_vars.locals.tags
 }
 
 terraform {
   source = "../../../../../modules/s3-state"
 }
 
-generate "backend" {
-  path      = "backend.tf"
-  if_exists = "overwrite"
-  contents  = <<EOF
-terraform {
-  backend "local" {}
-}
-EOF
-}
-
-generate "providers" {
-  path      = "providers.tf"
-  if_exists = "overwrite"
-  contents  = <<EOF
-provider "aws" {
-  region  = "${local.region}"
-  default_tags {
-    tags = {
-      Env         = "${local.tags["Env"]}"
-      Client      = "${local.tags["Client"]}"
-      Managed     = "${local.tags["Managed"]}"
-      Project     = "${local.tags["Project"]}"
-      Github      = "${local.tags["Github"]}"
-    }
-  }  
-}
-EOF
-}
-
 dependency "bootstrap_iam_state" {
   config_path = "../iam-state"
 
   mock_outputs = {
-    deploy_role_arn  = "mock-cicd-arn"
+    deploy_role_arn = "arn:aws:iam::000000000000:role/mock-cicd-role"
   }
+
+  mock_outputs_allowed_terraform_commands = ["init", "validate", "plan"]
 }
 
 inputs = {
-  bucket_name               = local.account_vars.locals.s3_terraform_state
-  versioning                = false
-  deploy_role_arn           = dependency.bootstrap_iam_state.outputs.deploy_role_arn # needed for assign policy for s3 bucket
+  bucket_name     = local.account_vars.locals.s3_terraform_state
+  versioning      = false                                                  # POC: accepted risk, see review notes
+  deploy_role_arn = dependency.bootstrap_iam_state.outputs.deploy_role_arn # needed for assign policy for s3 bucket
 }
