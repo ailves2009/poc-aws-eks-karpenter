@@ -21,6 +21,8 @@ dependency "vpc" {
   mock_outputs = {
     vpc_id = "vpc-00000000000000000"
   }
+
+  mock_outputs_allowed_terraform_commands = ["init", "validate", "plan"]
 }
 
 dependency "eks" {
@@ -32,6 +34,8 @@ dependency "eks" {
     cluster_certificate_authority_data = "bW9jaw=="
     oidc_provider_arn                  = "arn:aws:iam::000000000000:oidc-provider/oidc.eks.us-east-1.amazonaws.com/id/MOCK"
   }
+
+  mock_outputs_allowed_terraform_commands = ["init", "validate", "plan"]
 }
 
 dependency "iam_state" {
@@ -40,6 +44,8 @@ dependency "iam_state" {
   mock_outputs = {
     permissions_boundary_arn = "arn:aws:iam::000000000000:policy/mock-boundary"
   }
+
+  mock_outputs_allowed_terraform_commands = ["init", "validate", "plan"]
 }
 
 inputs = {

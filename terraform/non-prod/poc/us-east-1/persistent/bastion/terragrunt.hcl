@@ -22,6 +22,8 @@ dependency "bootstrap_iam_state" {
     deploy_role_arn          = "arn:aws:iam::000000000000:role/mock-cicd-arn"
     permissions_boundary_arn = "arn:aws:iam::000000000000:policy/mock-boundary"
   }
+
+  mock_outputs_allowed_terraform_commands = ["init", "validate", "plan"]
 }
 
 inputs = {
