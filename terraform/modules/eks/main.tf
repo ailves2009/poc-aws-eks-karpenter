@@ -30,18 +30,32 @@ module "eks" {
 
   iam_role_permissions_boundary = var.permissions_boundary_arn
 
+  # Addon versions are pinned via var.addon_versions; an addon missing from
+  # the map falls back to the most recent version for cluster_version (used
+  # for intermediate steps of a staged control-plane upgrade).
+  # Note: EKS cannot downgrade an addon, so a pin must be >= what is running.
   cluster_addons = {
-    coredns    = { most_recent = true }
-    kube-proxy = { most_recent = true }
+    coredns = {
+      addon_version = lookup(var.addon_versions, "coredns", null)
+      most_recent   = !contains(keys(var.addon_versions), "coredns")
+    }
+    kube-proxy = {
+      addon_version = lookup(var.addon_versions, "kube-proxy", null)
+      most_recent   = !contains(keys(var.addon_versions), "kube-proxy")
+    }
     vpc-cni = {
       before_compute = true # install before nodes join
-      most_recent    = true
+      addon_version  = lookup(var.addon_versions, "vpc-cni", null)
+      most_recent    = !contains(keys(var.addon_versions), "vpc-cni")
       pod_identity_association = [{
         role_arn        = aws_iam_role.vpc_cni.arn
         service_account = "aws-node"
       }]
     }
-    eks-pod-identity-agent = { most_recent = true }
+    eks-pod-identity-agent = {
+      addon_version = lookup(var.addon_versions, "eks-pod-identity-agent", null)
+      most_recent   = !contains(keys(var.addon_versions), "eks-pod-identity-agent")
+    }
     # aws-ebs-csi-driver: requires an IRSA role / Pod Identity Association
     # to authenticate the controller. Add back together with that wiring when
     # PersistentVolumes become a requirement.
