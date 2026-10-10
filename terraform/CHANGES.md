@@ -3,6 +3,65 @@
 Reverse-chronological log of structural / behavioural changes. Bug fixes that
 don't change behaviour aren't listed unless they shaped the design.
 
+## 0.2.0 — Review fixes: Karpenter 1.15, EKS 1.37, bastion access
+
+### Security
+
+- `managed_role_names` now match the role names the modules really create
+  (`KarpenterController-*`, `Karpenter-*`, `aws-load-balancer-controller-*`,
+  `vpc-cni-*`).
+- Bootstrap providers pinned with `allowed_account_ids`.
+- Bastion: easy-rsa archive verified against a pinned SHA-256 (taken after
+  a GPG signature check) and downloaded with `curl -f`; IMDS hop limit 2 → 1.
+
+### Known issues (accepted for POC, fix before prod)
+
+- **The CI/CD role can escalate to admin.** It can edit its own managed
+  policies (`CreatePolicyVersion` / `SetDefaultPolicyVersion` on `policy/*`).
+  `cicd-boundary` is `Allow *`, so a bounded role it creates with
+  `AdministratorAccess` is effectively admin. Boundary set/delete is
+  unconditioned. Fix: Deny on its own policies, role and boundary, a
+  per-service allowlist boundary, and boundary-conditioned detach/delete.
+  Tracked in README → Roadmap to production.
+
+### Changed
+
+- **Karpenter 1.2.0 → 1.15.0**, controller policy switched to v1
+  (`enable_v1_permissions = true`) plus `iam:ListInstanceProfiles`,
+  `ec2:DescribeInstanceStatus`, `ec2:DescribeCapacityReservations`.
+- **CRDs via a separate `karpenter-crd` release** (Helm never upgrades a
+  chart's `crds/`); main chart uses `skip_crds = true`.
+- EC2NodeClass AMI pinned (`al2023@v20261003`) instead of `@latest`;
+  default NodePool CPU limit 1000 → 32.
+- `gavinbunney/kubectl` → maintained fork `alekc/kubectl` (same resource types).
+- **EKS 1.32 → 1.37** (1.32 is on extended support since 2026-03-23). Addon
+  versions pinned via `addon_versions` instead of `most_recent = true`.
+- **nginx demo**: bitnami chart + frozen `bitnamilegacy/nginx` replaced by
+  local [charts/nginx-demo](charts/nginx-demo) with
+  `nginxinc/nginx-unprivileged:1.30.5-alpine` and `busybox:1.38.0`, both
+  pinned by digest. Release name and selector labels unchanged.
+- Terragrunt `dependency` mocks restricted to `init`/`validate`/`plan`.
+- Bootstrap local state moved out of `.terragrunt-cache` (next to each
+  unit's `terragrunt.hcl`); shared config in `bootstrap/bootstrap.hcl`.
+- `default_tags` on all AWS providers; `required_version >= 1.10`
+  (needed by `use_lockfile`); helm provider `>= 3.0`; s3-state AWS `>= 6.0`.
+- Legacy `modules/iam`, `modules/metrics` (unused): broken ARNs, foreign
+  project references and the CA decoding bug fixed.
+
+### Fixed
+
+- **Bastion was unreachable by SSM / Instance Connect.** The AMI filter
+  `al2023-ami-*-arm64` matched `al2023-ami-minimal-*`, which ships without
+  `amazon-ssm-agent` and `ec2-instance-connect`. The filter now selects the
+  standard image, and cloud-init installs both packages explicitly. There
+  is an optional SSH key pair (`bastion.pub`). The allowed CIDRs come from
+  `BASTION_ALLOWED_CIDRS` and are never committed.
+
+### Upgrade notes (existing deployment)
+
+Step-by-step: [runbooks/upgrade-0.2.0.md](runbooks/upgrade-0.2.0.md).
+Bastion rebuild and access: [runbooks/bastion-access.md](runbooks/bastion-access.md).
+
 ## 0.1.2 — VPC CNI on EKS Pod Identity
 
 ### Changed
