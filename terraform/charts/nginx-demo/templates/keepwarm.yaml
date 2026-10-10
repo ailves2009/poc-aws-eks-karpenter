@@ -1,0 +1,42 @@
+{{- if .Values.keepwarm.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: keepwarm
+  labels:
+    app: keepwarm
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: keepwarm
+  template:
+    metadata:
+      labels:
+        app: keepwarm
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: gen
+          image: {{ include "nginx-demo.image" .Values.keepwarm.image }}
+          command: ["/bin/sh", "-c"]
+          args:
+            - while sleep 1; do wget -q -O- http://{{ .Release.Name }}.{{ .Release.Namespace }}.svc.cluster.local > /dev/null; done
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 5m
+              memory: 16Mi
+            limits:
+              cpu: 20m
+              memory: 32Mi
+{{- end }}
