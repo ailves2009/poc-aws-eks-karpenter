@@ -2,7 +2,7 @@
 #
 # Karpenter setup, three layers:
 #   1. AWS-side IAM/SQS/EventBridge from terraform-aws-modules/eks/aws//modules/karpenter
-#   2. Helm release of the Karpenter chart from the public ECR registry
+#   2. Helm releases: karpenter-crd (CRDs) + karpenter (controller), both vendored
 #   3. Default EC2NodeClass + NodePool kubernetes manifests
 #
 # Workloads on the bootstrap managed node group are unaffected — Karpenter
@@ -17,10 +17,29 @@ module "karpenter" {
 
   cluster_name = var.cluster_name
 
+  # Controller policy for Karpenter v1.x. The module default (false) renders
+  # the v0.33–v0.37 policy, which does not match the v1 controller.
+  enable_v1_permissions = true
+
   # IRSA for the Karpenter controller pod
   enable_irsa                     = true
   irsa_oidc_provider_arn          = var.oidc_provider_arn
   irsa_namespace_service_accounts = ["kube-system:karpenter"]
+
+  # Permissions required by newer Karpenter releases that the upstream v1
+  # policy (module v20.x) does not include yet. See
+  # https://karpenter.sh/docs/upgrading/upgrade-guide/
+  iam_policy_statements = [
+    {
+      sid = "AllowKarpenterPost1xReadActions"
+      actions = [
+        "iam:ListInstanceProfiles",         # required since 1.7
+        "ec2:DescribeInstanceStatus",       # required since 1.12 (interruption controller)
+        "ec2:DescribeCapacityReservations", # ODCR / reserved capacity support (1.3+)
+      ]
+      resources = ["*"]
+    },
+  ]
 
   iam_role_permissions_boundary_arn  = var.permissions_boundary_arn
   node_iam_role_permissions_boundary = var.permissions_boundary_arn
@@ -32,7 +51,7 @@ module "karpenter" {
 }
 
 # ---------------------------------------------------------------------------
-# 2. Helm release
+# 2. Helm releases
 # ---------------------------------------------------------------------------
 
 provider "helm" {
@@ -59,16 +78,30 @@ provider "kubectl" {
   }
 }
 
+# CRDs are a separate release: Helm installs a chart's crds/ directory only
+# on first install and never upgrades it, so with a single chart the CRDs
+# would stay at the version of the very first install forever.
+resource "helm_release" "karpenter_crd" {
+  namespace = "kube-system"
+  name      = "karpenter-crd"
+  chart     = "${path.module}/charts/karpenter-crd-${var.karpenter_chart_version}.tgz"
+  wait      = true
+}
+
 resource "helm_release" "karpenter" {
   namespace = "kube-system"
   name      = "karpenter"
   # Vendored chart — avoids the helm provider v3 bug with OCI registry
-  # token expiry on plan/update. To bump the chart version: pull a new
-  # .tgz into modules/karpenter/charts/, update var.karpenter_chart_version,
-  # commit. Image pulls (public.ecr.aws/karpenter/controller) at runtime
-  # still work anonymously without ECR Public auth.
+  # token expiry on plan/update. To bump the version: pull the new
+  # karpenter and karpenter-crd .tgz files into modules/karpenter/charts/,
+  # update var.karpenter_chart_version, check the upgrade guide for new IAM
+  # permissions, commit. Image pulls (public.ecr.aws/karpenter/controller)
+  # at runtime still work anonymously without ECR Public auth.
   chart = "${path.module}/charts/karpenter-${var.karpenter_chart_version}.tgz"
   wait  = true
+
+  # CRDs are owned by helm_release.karpenter_crd.
+  skip_crds = true
 
   values = [yamlencode({
     serviceAccount = {
@@ -82,6 +115,8 @@ resource "helm_release" "karpenter" {
       interruptionQueue = module.karpenter.queue_name
     }
   })]
+
+  depends_on = [helm_release.karpenter_crd]
 }
 
 # ---------------------------------------------------------------------------
@@ -96,7 +131,10 @@ resource "kubectl_manifest" "default_ec2_node_class" {
       name = "default"
     }
     spec = {
-      amiSelectorTerms = [{ alias = "al2023@latest" }]
+      # Pinned AMI release instead of @latest: a new AMI is rolled out only
+      # when this value changes (Karpenter marks nodes as drifted and
+      # replaces them), not whenever AWS publishes one.
+      amiSelectorTerms = [{ alias = var.ami_alias }]
       role             = module.karpenter.node_iam_role_name
 
       subnetSelectorTerms = [{

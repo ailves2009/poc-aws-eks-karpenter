@@ -31,9 +31,15 @@ variable "permissions_boundary_arn" {
 }
 
 variable "karpenter_chart_version" {
-  description = "Version of the Karpenter Helm chart"
+  description = "Version of the vendored karpenter and karpenter-crd Helm charts (both .tgz must exist in charts/). 1.15.x supports Kubernetes 1.31–1.37."
   type        = string
-  default     = "1.2.0"
+  default     = "1.15.0"
+}
+
+variable "ami_alias" {
+  description = "EC2NodeClass amiSelectorTerms alias, pinned to an EKS AL2023 AMI release (family@vYYYYMMDD). Resolved per cluster Kubernetes version, so it stays valid across control-plane upgrades."
+  type        = string
+  default     = "al2023@v20261003"
 }
 
 variable "instance_categories" {
@@ -49,9 +55,9 @@ variable "instance_cpu_choices" {
 }
 
 variable "node_pool_cpu_limit" {
-  description = "Maximum total CPUs Karpenter is allowed to provision through the default NodePool"
+  description = "Maximum total CPUs Karpenter is allowed to provision through the default NodePool. Cost guard-rail: the nginx demo peaks at ~5 vCPU of requests (10 × 500m)."
   type        = string
-  default     = "1000"
+  default     = "32"
 }
 
 variable "tags" {
