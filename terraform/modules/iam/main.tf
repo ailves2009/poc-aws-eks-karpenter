@@ -1,4 +1,10 @@
 # modules/iam/main.tf
+#
+# LEGACY: not referenced by any terragrunt unit — superseded by
+# modules/iam-state (boundary-scoped CI/CD role). Kept for reference only.
+# Several statements below are intentionally broad ("*" resources,
+# iam:PassRole/CreateRole without a permissions boundary) and must be
+# tightened before this module is used anywhere.
 
 resource "aws_iam_role" "deploy_assume_role" {
   name               = var.cicd_role_name
@@ -106,7 +112,6 @@ data "aws_iam_policy_document" "deploy_core_permissions" {
     resources = [
       "arn:aws:iam::${var.account}:role/eks-irsa-role",
       "arn:aws:iam::${var.account}:role/rds-app-access-role",
-      "*"
     ]
   }
 
@@ -143,7 +148,6 @@ data "aws_iam_policy_document" "deploy_core_permissions" {
     ]
     resources = [
       "*"
-      # "arn:aws:ssm:${var.region}:${var.account}:parameter/dns/dmt.echotwin.xyz-ns"
     ]
   }
 
@@ -200,7 +204,6 @@ data "aws_iam_policy_document" "deploy_core_permissions" {
       "ecr:BatchCheckLayerAvailability"
     ]
     resources = [
-      # "arn:aws:ecr:eu-west-2:${var.region}:repository/stg-dmt/etl"
       "*"
     ]
   }
@@ -250,9 +253,9 @@ data "aws_iam_policy_document" "deploy_core_permissions" {
       "s3:GetEncryptionConfiguration",
       "s3:GetBucketObjectLockConfiguration",
       "s3:PutBucketTagging",
-      "s3:GetBucketOwnershipControls", #  "Resource": "arn:aws:s3:::bmta-terraform-state"
-      "s3:GetBucketPublicAccessBlock", #  "Resource": "arn:aws:s3:::bmta-terraform-state"
-      "s3:GetObject",                  #  "Resource": "arn:aws:s3:::bmta-xxx-detections/*"
+      "s3:GetBucketOwnershipControls",
+      "s3:GetBucketPublicAccessBlock",
+      "s3:GetObject",
       "s3:PutObject",
       "s3:ObjectOwnerOverrideToBucketOwner",
       "s3:PutObjectTagging", # for replication from client-xxx-detections

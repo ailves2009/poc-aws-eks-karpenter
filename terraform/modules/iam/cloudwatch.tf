@@ -32,7 +32,7 @@ resource "aws_iam_role_policy" "apigw_cloudwatch_logs" {
           "logs:GetLogEvents",
           "logs:PutLogEvents"
         ],
-        Resource = "arn:aws:logs:eu-west-1:${var.region}:log-group:*:log-stream:*"
+        Resource = "arn:aws:logs:${var.region}:${var.account}:log-group:*:log-stream:*"
       },
       {
         Sid    = "CloudWatchAccess2",
@@ -44,7 +44,7 @@ resource "aws_iam_role_policy" "apigw_cloudwatch_logs" {
           "logs:FilterLogEvents",
           "logs:CreateLogGroup"
         ],
-        Resource = "arn:aws:logs:eu-west-1:${var.region}:log-group:*"
+        Resource = "arn:aws:logs:${var.region}:${var.account}:log-group:*"
       }
     ]
   })
