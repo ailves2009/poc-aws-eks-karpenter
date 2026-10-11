@@ -23,6 +23,7 @@ Requires: helm (3.8+), PyYAML.
 """
 from __future__ import annotations
 
+import re
 import subprocess
 import sys
 import tempfile
@@ -103,12 +104,18 @@ def check_service(chart: Path, service: str) -> list[str]:
     return errors
 
 
-def expect_failure(chart: Path, service: str, why: str, extra: list[str], overlay: dict | None, needle: str) -> list[str]:
+def expect_failure(chart: Path, service: str, why: str, extra: list[str], overlay: dict | None, pattern: str) -> list[str]:
+    """The render must fail, and for the expected reason.
+
+    `pattern` is a case-insensitive regex, not a literal: Helm 3 and Helm 4 validate the schema
+    with different JSON Schema libraries and word the same error differently
+    ("Additional property replica is not allowed" vs "additional properties 'replica' not allowed").
+    """
     result = render(chart, service, extra, overlay)
     if result.returncode == 0:
         return [f"{why}: render succeeded, it must fail"]
-    if needle not in result.stderr:
-        return [f"{why}: failed, but without {needle!r}: {result.stderr.strip()}"]
+    if not re.search(pattern, result.stderr, re.IGNORECASE):
+        return [f"{why}: failed, but not matching /{pattern}/: {result.stderr.strip()}"]
     return []
 
 
@@ -138,7 +145,7 @@ def main() -> int:
             errors += expect_failure(chart, service, "no activeApp", [], env_overlay(service), "activeApp")
             errors += expect_failure(chart, service, "unknown values key",
                                      ["--set", f"activeApp={service}", "--set", f"applications.{service}.replica=2"],
-                                     env_overlay(service), "additional properties 'replica' not allowed")
+                                     env_overlay(service), r"additional propert(y|ies).{0,3}replica.{0,3}(is )?not allowed")
             errors += expect_failure(chart, service, "image without digest",
                                      ["--set", f"activeApp={service}"], no_digest, "digest")
             status = "FAIL" if errors else "ok  "
