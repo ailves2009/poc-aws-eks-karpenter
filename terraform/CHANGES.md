@@ -30,6 +30,20 @@ don't change behaviour aren't listed unless they shaped the design.
   Argo CD. metrics-server is adopted in place; the demo moves from namespace `demo` to `demo-dev`
   (`<app>-<env>`), with `keepwarm` as a service of its own.
 
+### Fixed
+
+- Chart contract test matched the schema error text of Helm 4 only; Helm 3 (CI, and Argo CD's
+  repo-server) words it differently. Errors are now matched by a case-insensitive pattern, and
+  the tests pass on both.
+- GitHub Actions moved to their Node 24 majors (`checkout@v6`, `setup-python@v6`,
+  `setup-helm@v5`) in all four repositories.
+
+### Verified on the live POC (EKS 1.37, 2026-10-11)
+
+All five Applications `Synced / Healthy`; metrics-server adopted (Argo CD tracking id, `kubectl
+top` works); nginx scheduled on a Karpenter spot node; `HTTP 200` through the new ALB; CI green
+in all four repositories.
+
 ### Removed
 
 - Units `workload/metrics-server`, `workload/nginx` and `terraform/charts/nginx-demo`.

@@ -321,8 +321,10 @@ Default policy `role:readonly`; project roles (`operator`, `developer`) grant `g
 - AWS account with an IAM user `terraform` (long-lived access keys).
 - AWS CLI profile `ae-nyd-plt-init` configured with that user's keys (`~/.aws/config` + `~/.aws/credentials`).
 - Terraform >= 1.10 (or OpenTofu >= 1.8).
-- Terragrunt >= 0.69.
-- `kubectl`, `helm` (for cluster operations later).
+- Terragrunt >= 1.0 (the `run --all` CLI).
+- `kubectl`, `helm` (cluster operations, local chart renders); `gh` (GitHub CLI) for the GitOps repositories.
+- Python 3 + PyYAML — only to run the chart contract tests locally (`charts/tests/contract_test.py`).
+- The three GitOps repositories ([root](https://github.com/ailves2009/poc-eks-gitops-root), [projects](https://github.com/ailves2009/poc-eks-gitops-projects), [values](https://github.com/ailves2009/poc-eks-gitops-values)) on GitHub, public (Argo CD reads them without credentials), and the chart tag `demo-apps-v1.0.0` in this repo.
 - **DNS for the demo Ingress**: external. The nginx Ingress matches Host header = `nginx.${var.domain_name}`. After `apply`, get the ALB DNS from `kubectl get ingress -n demo-dev nginx` and create a CNAME in whatever Route53 zone you own — or test via `curl --resolve` (see Testing methodology). **No Route53 zone is created in this account.**
 
 The `terraform` IAM user needs permissions to bootstrap: create the IAM role, the boundary policy, and the S3 bucket. After bootstrap, the user is only ever used to assume `cicd-deployment-role`.
@@ -342,13 +344,19 @@ The first run is a two-step process because `cicd-deployment-role` and the S3 st
 AWS_PROFILE=ae-nyd-plt-init terragrunt run --all apply \
   --working-dir non-prod/poc/us-east-1/bootstrap
 
-# Step 2 — main layer (uses the freshly created bucket and AssumeRole)
+# Step 2 — main layer (uses the freshly created bucket and AssumeRole).
+# The last unit, workload/argocd, installs Argo CD + the root Application; Argo CD then
+# deploys metrics-server and the demo from the GitOps repositories on its own.
 AWS_PROFILE=ae-nyd-plt-init terragrunt run --all apply
 ```
 
+Applications are not deployed by Terraform: after Step 2 watch them converge with
+`kubectl -n argocd get applications` (all `Synced / Healthy` within a few minutes). For a
+migration of an existing pre-0.3.0 deployment use [runbooks/gitops-argocd.md](runbooks/gitops-argocd.md).
+
 ### Subsequent deploys
 
-After bootstrap, the regular workflow is one command. Bootstrap is idempotent and won't recreate anything:
+After bootstrap, infrastructure changes are one command. Bootstrap is idempotent and won't recreate anything. Application changes (images, replicas, new services) are **not** Terraform: they are pull requests to [poc-eks-gitops-values](https://github.com/ailves2009/poc-eks-gitops-values), applied by Argo CD.
 
 ```bash
 AWS_PROFILE=ae-nyd-plt-init terragrunt run --all plan
@@ -420,7 +428,8 @@ Verifies every component is alive before exercising it.
 kubectl get nodes -L topology.kubernetes.io/zone -L node.kubernetes.io/instance-type -L kubernetes.io/arch
 
 # (b) system pods — all Running: coredns, kube-proxy, aws-node (vpc-cni),
-#     eks-pod-identity-agent, karpenter (×2), metrics-server (×1)
+#     eks-pod-identity-agent, karpenter (×2), aws-load-balancer-controller (×2),
+#     metrics-server (×1, deployed by Argo CD), argocd-* (×5)
 kubectl get pods -A
 
 # (c) cluster RBAC — cicd-deployment-role should hold ClusterAdmin via Access Entry
@@ -433,8 +442,14 @@ kubectl get ec2nodeclass,nodepool
 kubectl top nodes
 kubectl top pods -A | head -10
 
-# (f) Ingress + ALB — should have CLASS=alb, ADDRESS=k8s-...elb.amazonaws.com
+# (f) Ingress + ALB — should have CLASS=alb, ADDRESS=k8s-demodev-nginx-...elb.amazonaws.com
 kubectl get ingress -n demo-dev
+
+# (g) GitOps — root, projects, infra-poc-plt-eks-metrics-server, demo-dev-nginx,
+#     demo-dev-keepwarm: all Synced / Healthy
+kubectl -n argocd get applications -o custom-columns='NAME:.metadata.name,SYNC:.status.sync.status,HEALTH:.status.health.status'
+#     multi-source Applications report revisions in .status.sync.revisions (plural):
+kubectl -n argocd get application demo-dev-nginx -o jsonpath='{.status.sync.revisions}{"\n"}'
 ```
 
 ### 0.5. End-to-end through the ALB
@@ -702,7 +717,6 @@ Custom-from-scratch is reserved for things that are simple enough to own (`iam-s
 - Observability stack (Prometheus, Grafana, Loki).
 - Centralized logging, alerting (PagerDuty / OpsGenie).
 - Service mesh.
-- GitOps (ArgoCD / Flux).
 - Multi-environment beyond `non-prod/poc/`.
 
 ---
@@ -712,6 +726,13 @@ Custom-from-scratch is reserved for things that are simple enough to own (`iam-s
 ### CI/CD role can escalate to admin (POC only)
 
 `cicd-deployment-role` ([modules/iam-state](modules/iam-state/main.tf)) can grant itself admin rights. It can rewrite its own managed policies (`CreatePolicyVersion` / `SetDefaultPolicyVersion` on `policy/*`). The permissions boundary `cicd-boundary` is `Allow *`, so a role it creates with `AdministratorAccess` attached is effectively admin. It can also set or remove boundaries on any role. This is accepted for the POC and **must be fixed before prod** (see [Roadmap to production](#roadmap-to-production)).
+
+### Argo CD access is local admin + port-forward (POC only)
+
+No Ingress and no SSO: the UI and API are reached with `kubectl port-forward`, and the local
+`admin` account's password is in `argocd-initial-admin-secret` (a new one on every rebuild). For
+anything beyond a POC: an OIDC/SSO connector bound to the project roles, `admin.enabled: false`,
+and an internal Ingress.
 
 ### Runbooks
 
@@ -734,7 +755,7 @@ Since mid-2025 Bitnami restricted free-tier access to `docker.io/bitnami/*` and 
 
 - **Karpenter chart vendored locally**. The chart `oci://public.ecr.aws/karpenter/karpenter` is pre-pulled into `modules/karpenter/charts/karpenter-<version>.tgz` and committed. Done because `helm provider v3` re-authenticates against OCI on every `plan`, and the auth token (TTL 12h from `data.aws_ecrpublic_authorization_token`) frequently fails with `403 expired` on subsequent applies. CRDs come from a separate vendored `karpenter-crd` chart (Helm never upgrades a chart's `crds/` directory). To bump the version: `helm pull oci://public.ecr.aws/karpenter/karpenter --version <X.Y.Z> --destination modules/karpenter/charts/` **and** the same for `oci://public.ecr.aws/karpenter/karpenter-crd`, update `var.karpenter_chart_version`, check the [upgrade guide](https://karpenter.sh/docs/upgrading/upgrade-guide/) for new controller IAM permissions (add them to `iam_policy_statements`), commit. Runtime image pulls (`public.ecr.aws/karpenter/controller`) are anonymous and unaffected. Tracked at https://github.com/hashicorp/terraform-provider-helm
 - **Cross-account DNS automation**. The authoritative zone (`example.com`) is in a different AWS account from where the workload runs. Currently the operator manually adds CNAMEs. Two options to automate: (a) cross-account IAM trust — give this account a role in the DNS account that lets it `route53:ChangeResourceRecordSets` on `*.poc.example.com`; deploy `external-dns` here pointing at that role. (b) `external-dns` running in DNS account, watching the workload account's resources via cross-account read of LB addresses. (a) is more idiomatic. Once done, drop `--resolve` from the test methodology and use `curl http://$HOST/` directly.
-- **HTTPS / ACM cert + real domain**. The demo Ingress on nginx is **HTTP-only**. ACM DNS-validation requires the cert's domain to be delegated to a Route53 zone in this AWS account; in the original POC neither candidate domain qualified (corp parent zone wasn't delegate-able; the personal alternative lived in a different AWS account). To enable HTTPS for prod: either (a) cross-account delegate a subdomain to this account's Route53 (NS records pointing at this account's nameservers), add a `persistent/acm` unit that issues a wildcard cert via DNS validation, and add the HTTPS listener back to `nginx/terragrunt.hcl`; or (b) provision the cert externally and import via `aws_acm_certificate.import_*`.
+- **HTTPS / ACM cert + real domain**. The demo Ingress on nginx is **HTTP-only**. ACM DNS-validation requires the cert's domain to be delegated to a Route53 zone in this AWS account; in the original POC neither candidate domain qualified (corp parent zone wasn't delegate-able; the personal alternative lived in a different AWS account). To enable HTTPS for prod: either (a) cross-account delegate a subdomain to this account's Route53 (NS records pointing at this account's nameservers), add a `persistent/acm` unit that issues a wildcard cert via DNS validation, and add the HTTPS listener (`alb.ingress.kubernetes.io/listen-ports`, `certificate-arn`) to the ingress annotations in `workloads/dev/demo/nginx.yaml` of the values repo; or (b) provision the cert externally and import via `aws_acm_certificate.import_*`.
 - Bumping bootstrap node group `min_size`/`desired_size` after first apply requires a manual `aws eks update-nodegroup-config` because the upstream module (`terraform-aws-modules/eks/aws`) `ignore_changes = [scaling_config[0].desired_size]` on the managed NG. Workflow: AWS CLI to raise desired, then `terragrunt apply` for min/max. Document or wrap this in a small helper if it becomes routine.
 - **Bastion SSM agent registration**: root cause found. The AMI filter matched `al2023-ami-minimal-*`, which has no `amazon-ssm-agent` and no `ec2-instance-connect`. The filter is fixed and cloud-init installs both packages. The deployed instance still has to be rebuilt; see [runbooks/bastion-access.md](runbooks/bastion-access.md).
 - `workload/external-dns` (optional — auto-creates Route53 records for Service/Ingress). Limited utility while DNS is in another account; would need cross-account write permissions.
@@ -742,6 +763,7 @@ Since mid-2025 Bitnami restricted free-tier access to `docker.io/bitnami/*` and 
 - **Remove `AmazonEKS_CNI_Policy` from node IAM roles** now that VPC CNI uses Pod Identity. Currently the policy is still attached on the bootstrap node group (upstream module default) and on the Karpenter node role (`node_iam_role_attach_cni_policy = true` in [modules/karpenter/main.tf](modules/karpenter/main.tf)). Until removed, CNI gets credentials from two sources — Pod Identity works, but the security win (no CNI permissions reachable via IMDS from a compromised pod) is not realized. Sequence: confirm Pod Identity is healthy → flip the flag to `false` → apply → spot-check that `aws-node` still works.
 - VPC peering between bastion VPC (default) and workload VPC, so VPN clients can reach EKS workers.
 - Switch EKS endpoint to private-only after VPN is validated.
+- **`modules/helm-release`** is unused since 0.3.0 (applications are deployed by Argo CD): delete it, or keep it only for ad-hoc charts outside GitOps.
 - **Migrate bootstrap state from local backend to S3** after deploy stabilizes. `bootstrap/iam-state` and `bootstrap/s3-state` use `backend "local"` with the state file next to each unit's `terragrunt.hcl` (gitignored; configured in [`bootstrap/bootstrap.hcl`](non-prod/poc/us-east-1/bootstrap/bootstrap.hcl)), so clearing `.terragrunt-cache` is safe — but the files exist only on one laptop. Back them up until migrated.
 
 ---
@@ -760,3 +782,4 @@ Since mid-2025 Bitnami restricted free-tier access to `docker.io/bitnami/*` and 
 - Multi-env via separate AWS accounts (Organizations) and matching `account.hcl` per env.
 - OPA / Kyverno admission policies, NetworkPolicies, Secrets Manager / Vault for app secrets.
 - Replace default VPC for bastion with a dedicated platform VPC.
+- GitOps phase 2 — ACK, CRD lifecycle, Karpenter / LB controller via Argo CD, `poc-lib` in GHCR with release-please + cosign, self-managed Argo CD, Notifications, hub-spoke: see [GitOps with Argo CD → Roadmap](#roadmap-phase-2).

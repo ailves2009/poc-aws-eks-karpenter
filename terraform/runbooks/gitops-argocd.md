@@ -68,8 +68,8 @@ for r in projects root values; do
 done
 ```
 
-The root and values CIs read each other's `master`, so the first run of whichever was pushed
-first fails. Re-run it once all three exist:
+The root and values CIs read each other's `master`. With the push order above (projects → root →
+values) all three normally pass on the first run; if one ran before its sibling existed, re-run it:
 
 ```bash
 for r in root values projects; do gh run list -R ailves2009/poc-eks-gitops-$r -L 1; done
@@ -92,9 +92,11 @@ cd -
 kubectl -n argocd get pods                                    # all Running on bootstrap nodes
 kubectl -n argocd get appprojects                             # default, demo, infra-poc-plt-eks
 kubectl -n argocd get applicationsets                         # infra-poc-plt-eks, workloads-poc-plt-eks
-kubectl -n argocd get applications                            # root, projects,
-                                                              # infra-poc-plt-eks-metrics-server,
+kubectl -n argocd get applications -o custom-columns='NAME:.metadata.name,SYNC:.status.sync.status,HEALTH:.status.health.status'
+                                                              # root, projects, infra-poc-plt-eks-metrics-server,
                                                               # demo-dev-nginx, demo-dev-keepwarm  → Synced/Healthy
+# multi-source Applications show REVISION <none> in the default columns — their revisions are a list:
+kubectl -n argocd get application demo-dev-nginx -o jsonpath='{.status.sync.revisions}{"\n"}'
 kubectl -n demo-dev get deploy,svc,ingress,hpa
 kubectl get nodeclaims -w                                     # Karpenter adds spot capacity for nginx
 kubectl top pods -n demo-dev                                  # metrics-server works (adopted, rolled to 3.14.0)
