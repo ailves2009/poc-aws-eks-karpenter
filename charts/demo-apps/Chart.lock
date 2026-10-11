@@ -1,0 +1,6 @@
+dependencies:
+- name: poc-lib
+  repository: file://../poc-lib
+  version: 0.1.0
+digest: sha256:5a577d59efa749c92cd70e686b5f06705d29248bd833ebdfdc68c8fa26bd3eee
+generated: "2026-10-11T16:04:23.044096+02:00"

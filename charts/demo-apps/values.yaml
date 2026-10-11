@@ -1,0 +1,36 @@
+# Shape shared by every demo service. Nothing environment-specific belongs here: image, replicas,
+# ingress host and node placement come from the environment file in poc-eks-gitops-values.
+#
+# Value layering for one Application (later wins):
+#   1. this file                       (chart: shared shape)
+#   2. values/<service>.yaml           (chart: one service's shape)
+#   3. workloads/<env>/<app>/_env.yaml (values repo: landscape)
+#   4. workloads/<env>/<app>/<svc>.yaml (values repo: the service in this environment)
+#   5. activeApp=<service>             (Helm parameter from the ApplicationSet)
+
+# Set by the ApplicationSet; empty here so a bare `helm template` fails with a clear message.
+activeApp: ""
+
+global:
+  partOf: demo
+
+# Deep-merged under every applications.<service>; a service overrides any key (lists replace).
+common:
+  automountServiceAccountToken: false
+  podSecurityContext:
+    runAsNonRoot: true
+    seccompProfile:
+      type: RuntimeDefault
+  securityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop: ["ALL"]
+  resources:
+    requests:
+      cpu: 10m
+      memory: 16Mi
+    limits:
+      memory: 64Mi
+
+applications: {}

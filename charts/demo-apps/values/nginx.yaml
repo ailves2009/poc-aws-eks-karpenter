@@ -1,0 +1,31 @@
+# Shape of the nginx service: ports, probes, resources, volumes.
+# No image, no replicas, no host -- those are environment values.
+applications:
+  nginx:
+    containerPort: 8080 # nginx-unprivileged listens on 8080 as UID 101
+    service:
+      port: 80
+    readinessProbe:
+      httpGet:
+        path: /
+        port: http
+    livenessProbe:
+      httpGet:
+        path: /
+        port: http
+    # 500m requests: 10 replicas (5 vCPU) exceed two small spot nodes, so the HPA forces
+    # Karpenter to add capacity -- the cascade the demo shows.
+    resources:
+      requests:
+        cpu: 500m
+        memory: 128Mi
+      limits:
+        cpu: 1000m
+        memory: 256Mi
+    # readOnlyRootFilesystem (from common): nginx keeps pid and temp dirs in /tmp.
+    volumes:
+      - name: tmp
+        emptyDir: {}
+    volumeMounts:
+      - name: tmp
+        mountPath: /tmp

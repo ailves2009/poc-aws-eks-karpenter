@@ -1,0 +1,17 @@
+# Shape of the keepwarm service: a ~1 RPS loop against another service so `kubectl top`
+# shows non-zero numbers. The target URL is an environment value (args in the env file).
+applications:
+  keepwarm:
+    podSecurityContext:
+      runAsNonRoot: true
+      runAsUser: 65534
+      seccompProfile:
+        type: RuntimeDefault
+    command: ["/bin/sh", "-c"]
+    resources:
+      requests:
+        cpu: 5m
+        memory: 16Mi
+      limits:
+        cpu: 20m
+        memory: 32Mi
