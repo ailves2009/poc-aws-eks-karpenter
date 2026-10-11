@@ -1,8 +1,10 @@
 # /non-prod/poc/us-east-1/workload/nginx/terragrunt.hcl
 #
-# Demo workload: bitnami/nginx, 3 replicas, ClusterIP, pinned to spot capacity.
-# The `karpenter.sh/capacity-type=spot` nodeSelector guarantees the bootstrap
-# node group can't host these pods → Karpenter must provision new node(s).
+# Demo workload: official nginx (unprivileged) from the local chart
+# terraform/charts/nginx-demo, HPA 2..10 replicas, ClusterIP behind an ALB
+# Ingress, pinned to spot capacity. The `karpenter.sh/capacity-type=spot`
+# nodeSelector guarantees the bootstrap node group can't host these pods →
+# Karpenter must provision new node(s).
 
 locals {
   account_vars = read_terragrunt_config(find_in_parent_folders("account.hcl"))
@@ -32,6 +34,8 @@ dependency "eks" {
     cluster_endpoint                   = "https://mock.eks.amazonaws.com"
     cluster_certificate_authority_data = "bW9jaw=="
   }
+
+  mock_outputs_allowed_terraform_commands = ["init", "validate", "plan"]
 }
 
 # Ordering only: ensure Karpenter is up before any workload that asks for
@@ -42,6 +46,8 @@ dependency "karpenter" {
   mock_outputs = {
     queue_name = "mock"
   }
+
+  mock_outputs_allowed_terraform_commands = ["init", "validate", "plan"]
 }
 
 # HPA needs metrics-server's API to be available at scale time.
@@ -51,6 +57,8 @@ dependency "metrics_server" {
   mock_outputs = {
     status = "deployed"
   }
+
+  mock_outputs_allowed_terraform_commands = ["init", "validate", "plan"]
 }
 
 # AWS Load Balancer Controller turns Ingress objects into ALBs.
@@ -60,6 +68,8 @@ dependency "aws_lb_controller" {
   mock_outputs = {
     iam_role_arn = "arn:aws:iam::000000000000:role/mock-lb-controller"
   }
+
+  mock_outputs_allowed_terraform_commands = ["init", "validate", "plan"]
 }
 
 inputs = {
@@ -72,39 +82,21 @@ inputs = {
   namespace        = "demo"
   create_namespace = true
 
-  chart         = "nginx"
-  repository    = "https://charts.bitnami.com/bitnami"
-  chart_version = "18.3.6"
+  # Local chart (repository = null). Image tags + digests live in the chart's
+  # values.yaml. Bump `version` in Chart.yaml together with chart_version.
+  chart         = "${get_repo_root()}/terraform/charts/nginx-demo"
+  repository    = null
+  chart_version = "1.0.0"
 
   values = {
-    # As of mid-2025 Bitnami moved free-tier images to docker.io/bitnamilegacy/*.
-    # The chart added a verification step that fails when not using the
-    # premium/secure registries — bypass it explicitly for POC.
-    # https://github.com/bitnami/charts/issues/30850
-    global = {
-      security = {
-        allowInsecureImages = true
-      }
-    }
-    image = {
-      registry   = "docker.io"
-      repository = "bitnamilegacy/nginx"
-    }
-
-    # ClusterIP — Ingress is the public entrypoint; 
-    # Service is just the in-cluster target the ALB routes to.
-    service = {
-      type = "ClusterIP"
-    }
-
     # Public-facing ALB on HTTP only — POC has no proper DNS delegation
     # for ACM cert validation, so HTTPS is deferred (see TODO in README).
     # ALB matches Host header = local.hostname; the user's external CNAME
     # `<hostname>` → ALB DNS provides the resolution.
     ingress = {
-      enabled          = true
-      hostname         = local.hostname
-      ingressClassName = "alb"
+      enabled   = true
+      hostname  = local.hostname
+      className = "alb"
 
       annotations = {
         "alb.ingress.kubernetes.io/scheme"           = "internet-facing"
@@ -157,43 +149,9 @@ inputs = {
       targetCPU   = 50
     }
 
-    # Bitnami chart's escape hatch for shipping arbitrary manifests inside the
-    # release. We use it to add a tiny "keepwarm" loop — ~1 RPS against the
-    # nginx Service — so `kubectl top` always shows non-zero metrics on nginx
-    # pods. Load is well below the HPA threshold, so it does NOT trigger
-    # scaling. Lives in the demo namespace alongside nginx; runs on whichever
-    # node has free capacity (no nodeSelector).
-    extraDeploy = [
-      yamlencode({
-        apiVersion = "apps/v1"
-        kind       = "Deployment"
-        metadata = {
-          name      = "keepwarm"
-          namespace = "demo"
-          labels    = { app = "keepwarm" }
-        }
-        spec = {
-          replicas = 1
-          selector = { matchLabels = { app = "keepwarm" } }
-          template = {
-            metadata = { labels = { app = "keepwarm" } }
-            spec = {
-              containers = [{
-                name    = "gen"
-                image   = "busybox:1.28"
-                command = ["/bin/sh", "-c"]
-                args = [
-                  "while sleep 1; do wget -q -O- http://nginx.demo.svc.cluster.local > /dev/null; done"
-                ]
-                resources = {
-                  requests = { cpu = "5m", memory = "16Mi" }
-                  limits   = { cpu = "20m", memory = "32Mi" }
-                }
-              }]
-            }
-          }
-        }
-      }),
-    ]
+    # ~1 RPS keep-warm loop against the nginx Service (see chart values).
+    keepwarm = {
+      enabled = true
+    }
   }
 }

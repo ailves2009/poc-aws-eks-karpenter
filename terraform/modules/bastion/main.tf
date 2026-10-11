@@ -18,14 +18,17 @@ data "aws_subnets" "default" {
   }
 }
 
-# Amazon Linux 2023, ARM64 — matches t4g.* instances.
+# Amazon Linux 2023 standard, ARM64 — matches t4g.* instances.
+# The pattern must NOT match "al2023-ami-minimal-*": the minimal image ships
+# without amazon-ssm-agent and ec2-instance-connect (the first bastion was
+# built from it, which is why SSM never registered).
 data "aws_ami" "al2023_arm" {
   most_recent = true
   owners      = ["amazon"]
 
   filter {
     name   = "name"
-    values = ["al2023-ami-*-arm64"]
+    values = ["al2023-ami-2023.*-arm64"]
   }
   filter {
     name   = "architecture"
@@ -104,6 +107,16 @@ resource "aws_iam_instance_profile" "bastion" {
   role = aws_iam_role.bastion.name
 }
 
+# Optional SSH key pair. Without it, SSH works only via EC2 Instance Connect
+# (temporary keys pushed through the API) and the fallback is SSM.
+resource "aws_key_pair" "bastion" {
+  count = var.ssh_public_key != "" ? 1 : 0
+
+  key_name   = "bastion"
+  public_key = var.ssh_public_key
+  tags       = var.tags
+}
+
 resource "aws_instance" "bastion" {
   ami                         = data.aws_ami.al2023_arm.id
   instance_type               = var.instance_type
@@ -111,12 +124,14 @@ resource "aws_instance" "bastion" {
   vpc_security_group_ids      = [aws_security_group.bastion.id]
   iam_instance_profile        = aws_iam_instance_profile.bastion.name
   associate_public_ip_address = true
-  user_data                   = file("${path.module}/cloud-init.sh")
+  # Changing the key pair replaces the instance (and regenerates the PKI).
+  key_name  = try(aws_key_pair.bastion[0].key_name, null)
+  user_data = file("${path.module}/cloud-init.sh")
 
   metadata_options {
     http_endpoint               = "enabled"
     http_tokens                 = "required" # IMDSv2 only
-    http_put_response_hop_limit = 2
+    http_put_response_hop_limit = 1          # no containers on the host
   }
 
   root_block_device {

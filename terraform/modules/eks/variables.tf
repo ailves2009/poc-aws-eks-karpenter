@@ -6,9 +6,15 @@ variable "cluster_name" {
 }
 
 variable "cluster_version" {
-  description = "Kubernetes version"
+  description = "Kubernetes version. EKS upgrades one minor version at a time; Karpenter must support the target version first (see modules/karpenter)."
   type        = string
-  default     = "1.32"
+  default     = "1.37"
+}
+
+variable "addon_versions" {
+  description = "Pinned EKS addon versions, keyed by addon name (coredns, kube-proxy, vpc-cni, eks-pod-identity-agent). Addons not in the map use the most recent version for cluster_version. List with: aws eks describe-addon-versions --kubernetes-version <v> --addon-name <name>"
+  type        = map(string)
+  default     = {}
 }
 
 variable "vpc_id" {
@@ -34,7 +40,7 @@ variable "cluster_endpoint_private_access" {
 }
 
 variable "cluster_endpoint_public_access_cidrs" {
-  description = "CIDRs allowed to reach the public endpoint. Lock down for production."
+  description = "CIDRs allowed to reach the public endpoint. POC: open to the internet on purpose (auth is still IAM). Lock down for production."
   type        = list(string)
   default     = ["0.0.0.0/0"]
 }

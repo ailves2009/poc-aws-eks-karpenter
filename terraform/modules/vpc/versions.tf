@@ -1,7 +1,8 @@
 # /modules/vpc/versions.tf
 
 terraform {
-  required_version = ">= 1.5"
+  # use_lockfile (S3 native locking) in root.hcl needs >= 1.10.
+  required_version = ">= 1.10"
 
   required_providers {
     aws = {

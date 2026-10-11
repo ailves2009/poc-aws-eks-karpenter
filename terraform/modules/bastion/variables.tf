@@ -23,6 +23,12 @@ variable "allowed_cidrs" {
   type        = list(string)
 }
 
+variable "ssh_public_key" {
+  description = "OpenSSH public key for an EC2 key pair attached to the bastion (user ec2-user). Empty = no key pair; use EC2 Instance Connect or SSM instead. Changing it replaces the instance."
+  type        = string
+  default     = ""
+}
+
 variable "instance_type" {
   description = "EC2 instance type (must match AMI architecture; default is ARM Graviton). t4g.nano (512MB) is too small — first-boot dnf update + openvpn/easy-rsa setup hits OOM. t4g.small (2GB) is the realistic floor."
   type        = string

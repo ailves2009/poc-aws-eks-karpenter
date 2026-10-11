@@ -431,7 +431,7 @@ kubectl run fortio -n demo --image=fortio/fortio --restart=Never -- \
 For even more intensity, run multiple busybox loops in parallel alongside fortio (as a quick "spam" generator):
 ```bash
 for i in 1 2 3 4 5; do
-  kubectl run -n demo "loadgen-$i" --image=busybox:1.28 --restart=Never -- \
+  kubectl run -n demo "loadgen-$i" --image=busybox:1.38.0 --restart=Never -- \
     /bin/sh -c "while sleep 0.005; do wget -q -O- http://nginx.demo.svc.cluster.local; done" &
 done
 ```
@@ -599,18 +599,18 @@ Custom-from-scratch is reserved for things that are simple enough to own (`iam-s
 
 ## Known caveats
 
-### Bitnami images moved to `bitnamilegacy`
+### CI/CD role can escalate to admin (POC only)
 
-Since mid-2025 Bitnami restricted free-tier access to `docker.io/bitnami/*` images and snapshotted them into `docker.io/bitnamilegacy/*`. Charts now also embed a verification step that **rejects** non-secure/non-premium image registries unless `global.security.allowInsecureImages = true` is set. Two overrides are required for any bitnami chart:
+`cicd-deployment-role` ([modules/iam-state](modules/iam-state/main.tf)) can grant itself admin rights. It can rewrite its own managed policies (`CreatePolicyVersion` / `SetDefaultPolicyVersion` on `policy/*`). The permissions boundary `cicd-boundary` is `Allow *`, so a role it creates with `AdministratorAccess` attached is effectively admin. It can also set or remove boundaries on any role. This is accepted for the POC and **must be fixed before prod** (see [Roadmap to production](#roadmap-to-production)).
 
-```hcl
-values = {
-  global = { security = { allowInsecureImages = true } }
-  image  = { registry = "docker.io", repository = "bitnamilegacy/<chart>" }
-}
-```
+### Runbooks
 
-For long-term, switch to alternative charts (NGINX Inc, custom) or self-hosted images.
+- [runbooks/upgrade-0.2.0.md](runbooks/upgrade-0.2.0.md): upgrade the deployed POC to 0.2.0 (Karpenter 1.15, EKS 1.37).
+- [runbooks/bastion-access.md](runbooks/bastion-access.md): rebuild the bastion, SSH, SSM, OpenVPN client config.
+
+### No Bitnami charts
+
+Since mid-2025 Bitnami restricted free-tier access to `docker.io/bitnami/*` and froze the old images under `docker.io/bitnamilegacy/*` (no security updates). Bitnami charts only work with Bitnami images, so the nginx demo uses a small local chart instead — [`charts/nginx-demo`](charts/nginx-demo) — with the official `nginxinc/nginx-unprivileged` image pinned by tag + digest. Its selector labels match the old bitnami release, so `helm upgrade` switched charts in place. Avoid bitnami charts for new components.
 
 ### EKS Spot service-linked role
 
@@ -620,24 +620,29 @@ For long-term, switch to alternative charts (NGINX Inc, custom) or self-hosted i
 
 ## TODO
 
-- **Karpenter chart vendored locally**. The chart `oci://public.ecr.aws/karpenter/karpenter` is pre-pulled into `modules/karpenter/charts/karpenter-<version>.tgz` and committed. Done because `helm provider v3` re-authenticates against OCI on every `plan`, and the auth token (TTL 12h from `data.aws_ecrpublic_authorization_token`) frequently fails with `403 expired` on subsequent applies. To bump the chart version: `helm pull oci://public.ecr.aws/karpenter/karpenter --version <X.Y.Z> --destination modules/karpenter/charts/`, update `var.karpenter_chart_version`, commit. Runtime image pulls (`public.ecr.aws/karpenter/controller`) are anonymous and unaffected. Tracked at https://github.com/hashicorp/terraform-provider-helm
+- **Karpenter chart vendored locally**. The chart `oci://public.ecr.aws/karpenter/karpenter` is pre-pulled into `modules/karpenter/charts/karpenter-<version>.tgz` and committed. Done because `helm provider v3` re-authenticates against OCI on every `plan`, and the auth token (TTL 12h from `data.aws_ecrpublic_authorization_token`) frequently fails with `403 expired` on subsequent applies. CRDs come from a separate vendored `karpenter-crd` chart (Helm never upgrades a chart's `crds/` directory). To bump the version: `helm pull oci://public.ecr.aws/karpenter/karpenter --version <X.Y.Z> --destination modules/karpenter/charts/` **and** the same for `oci://public.ecr.aws/karpenter/karpenter-crd`, update `var.karpenter_chart_version`, check the [upgrade guide](https://karpenter.sh/docs/upgrading/upgrade-guide/) for new controller IAM permissions (add them to `iam_policy_statements`), commit. Runtime image pulls (`public.ecr.aws/karpenter/controller`) are anonymous and unaffected. Tracked at https://github.com/hashicorp/terraform-provider-helm
 - **Cross-account DNS automation**. The authoritative zone (`example.com`) is in a different AWS account from where the workload runs. Currently the operator manually adds CNAMEs. Two options to automate: (a) cross-account IAM trust — give this account a role in the DNS account that lets it `route53:ChangeResourceRecordSets` on `*.poc.example.com`; deploy `external-dns` here pointing at that role. (b) `external-dns` running in DNS account, watching the workload account's resources via cross-account read of LB addresses. (a) is more idiomatic. Once done, drop `--resolve` from the test methodology and use `curl http://$HOST/` directly.
 - **HTTPS / ACM cert + real domain**. The demo Ingress on nginx is **HTTP-only**. ACM DNS-validation requires the cert's domain to be delegated to a Route53 zone in this AWS account; in the original POC neither candidate domain qualified (corp parent zone wasn't delegate-able; the personal alternative lived in a different AWS account). To enable HTTPS for prod: either (a) cross-account delegate a subdomain to this account's Route53 (NS records pointing at this account's nameservers), add a `persistent/acm` unit that issues a wildcard cert via DNS validation, and add the HTTPS listener back to `nginx/terragrunt.hcl`; or (b) provision the cert externally and import via `aws_acm_certificate.import_*`.
 - Bumping bootstrap node group `min_size`/`desired_size` after first apply requires a manual `aws eks update-nodegroup-config` because the upstream module (`terraform-aws-modules/eks/aws`) `ignore_changes = [scaling_config[0].desired_size]` on the managed NG. Workflow: AWS CLI to raise desired, then `terragrunt apply` for min/max. Document or wrap this in a small helper if it becomes routine.
-- **Bastion SSM agent registration**. After `persistent/bastion` apply the SSM agent stays `Offline` (PingStatus empty). Reboot did not help. cloud-init initially failed on a `dnf -y update` curl/curl-minimal conflict — fixed in the script, but the agent never registered even on the rebuilt instance. Investigate: AL2023-arm64 AMI agent state, IMDSv2 + SG egress to `ssm.<region>.amazonaws.com` / `ec2messages.<region>` / `ssmmessages.<region>` (we allow all egress so should be fine), `sudo systemctl status amazon-ssm-agent` once we have any other path in. Workaround until fixed: SSH key access (would need to add `key_name` to the EC2 resource) or AWS Systems Manager → Fleet Manager remote shell from console.
+- **Bastion SSM agent registration**: root cause found. The AMI filter matched `al2023-ami-minimal-*`, which has no `amazon-ssm-agent` and no `ec2-instance-connect`. The filter is fixed and cloud-init installs both packages. The deployed instance still has to be rebuilt; see [runbooks/bastion-access.md](runbooks/bastion-access.md).
 - `workload/external-dns` (optional — auto-creates Route53 records for Service/Ingress). Limited utility while DNS is in another account; would need cross-account write permissions.
 - `aws-ebs-csi-driver` EKS addon (currently disabled — requires IRSA role / Pod Identity Association for the controller pod). Add when PersistentVolumes are needed. Pattern: same as VPC CNI (dedicated role + `pod_identity_association` on the addon).
 - **Remove `AmazonEKS_CNI_Policy` from node IAM roles** now that VPC CNI uses Pod Identity. Currently the policy is still attached on the bootstrap node group (upstream module default) and on the Karpenter node role (`node_iam_role_attach_cni_policy = true` in [modules/karpenter/main.tf](modules/karpenter/main.tf)). Until removed, CNI gets credentials from two sources — Pod Identity works, but the security win (no CNI permissions reachable via IMDS from a compromised pod) is not realized. Sequence: confirm Pod Identity is healthy → flip the flag to `false` → apply → spot-check that `aws-node` still works.
 - VPC peering between bastion VPC (default) and workload VPC, so VPN clients can reach EKS workers.
 - Switch EKS endpoint to private-only after VPN is validated.
-- **Migrate bootstrap state from local backend to S3** after deploy stabilizes. Currently `bootstrap/iam-state` and `bootstrap/s3-state` use `backend "local"` — state lives inside `.terragrunt-cache/...` and is destroyed by any `rm -rf .terragrunt-cache`. Migration steps: drop the `generate "backend"` block, add `include "root"` (inherits S3 backend), run `terragrunt init -migrate-state`. Until done: **never** delete `.terragrunt-cache` inside `bootstrap/`.
+- **Migrate bootstrap state from local backend to S3** after deploy stabilizes. `bootstrap/iam-state` and `bootstrap/s3-state` use `backend "local"` with the state file next to each unit's `terragrunt.hcl` (gitignored; configured in [`bootstrap/bootstrap.hcl`](non-prod/poc/us-east-1/bootstrap/bootstrap.hcl)), so clearing `.terragrunt-cache` is safe — but the files exist only on one laptop. Back them up until migrated.
 
 ---
 
 ## Roadmap to production
 
 - Replace static IAM user keys with OIDC for CI/CD.
-- Tighten boundary policy (currently `Allow *` minus boundary tampering — fine for POC, too wide for prod).
+- **Close the CI/CD privilege escalation** (see [Known caveats](#cicd-role-can-escalate-to-admin-poc-only)):
+  - Explicit Deny on the role's own policies, its own role and `cicd-boundary`.
+  - Replace the `Allow *` boundary with a per-service allowlist: no IAM writes except instance profiles and service-linked roles, no `sts:AssumeRole`.
+  - Condition detach/delete/`PutRolePermissionsBoundary` on `iam:PermissionsBoundary`.
+  - Drop `DeleteRolePermissionsBoundary`.
+  - Scope `iam:PassRole` / `iam:DeleteRole` to project role-name prefixes.
 - Migrate bootstrap state from local to S3 after the bucket exists.
 - Narrow `infra` IAM policy from action wildcards (`eks:*`, `ec2:*`) to specific actions.
 - Multi-env via separate AWS accounts (Organizations) and matching `account.hcl` per env.

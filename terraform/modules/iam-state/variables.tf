@@ -38,7 +38,7 @@ variable "managed_role_names" {
 }
 
 variable "permissions_boundary_name" {
-  description = "Name of the IAM policy used as permissions boundary for IAM roles that this CI/CD role creates. The boundary policy must be pre-created in the account."
+  description = "Name of the IAM policy used as permissions boundary for IAM roles that this CI/CD role creates. Created by this module (aws_iam_policy.cicd_boundary)."
   type        = string
   default     = "cicd-boundary"
 }

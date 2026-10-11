@@ -29,7 +29,7 @@ variable "account" {
 variable "client" {
   description = "Client name"
   type        = string
-  default     = "bmta"
+  default     = "poc"
 }
 
 variable "env" {

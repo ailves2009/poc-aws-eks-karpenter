@@ -1,23 +1,26 @@
 # /modules/karpenter/versions.tf
 
 terraform {
-  required_version = ">= 1.5"
+  # use_lockfile (S3 native locking) in root.hcl needs >= 1.10.
+  required_version = ">= 1.10"
 
   required_providers {
     aws = {
-      source  = "hashicorp/aws"
-      version = ">= 5.0"
+      source = "hashicorp/aws"
+      # terraform-aws-modules/eks/aws v20 is capped below 6.0.
+      version = ">= 5.95, < 6.0"
     }
     helm = {
-      source  = "hashicorp/helm"
-      version = ">= 2.12"
+      source = "hashicorp/helm"
+      # `kubernetes = { ... }` attribute syntax in the provider block is 3.x-only.
+      version = ">= 3.0"
     }
-    # gavinbunney/kubectl handles applying CRs whose CRDs were just installed —
-    # cleaner than hashicorp/kubernetes_manifest, which insists on the API
-    # server already knowing the kind at plan time.
+    # alekc/kubectl (maintained fork of gavinbunney/kubectl) applies CRs whose
+    # CRDs were just installed — cleaner than hashicorp/kubernetes_manifest,
+    # which insists on the API server already knowing the kind at plan time.
     kubectl = {
-      source  = "gavinbunney/kubectl"
-      version = ">= 1.14"
+      source  = "alekc/kubectl"
+      version = "~> 2.4"
     }
   }
 }

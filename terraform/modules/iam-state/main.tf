@@ -50,6 +50,13 @@ resource "aws_iam_role_policy_attachment" "s3_state_access" {
 
 # ---------------------------------------------------------------------------
 # 2. IAM management — все iam:* действия, разделённые по уровню риска
+#
+# KNOWN ISSUE (accepted for POC, must be fixed before prod): the CI/CD role
+# can escalate to admin — CreatePolicyVersion/SetDefaultPolicyVersion on
+# policy/* covers its own policies; the boundary (section 6) is Allow *, so
+# a bounded role with AdministratorAccess is effectively admin;
+# PutRolePermissionsBoundary/DeleteRolePermissionsBoundary are unconditioned.
+# See README → "Roadmap to production".
 # ---------------------------------------------------------------------------
 resource "aws_iam_policy" "iam_management" {
   name        = "${var.cicd_role_name}-iam-management"

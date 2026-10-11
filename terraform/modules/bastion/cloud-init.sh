@@ -5,8 +5,11 @@
 # doesn't prevent SSM agent from starting — we still want a way back in.
 set -uxo pipefail
 
-# (1) SSM first — if anything below this fails we keep a debugging path.
-# AL2023 has amazon-ssm-agent pre-installed; just make sure it's enabled.
+# (1) Access paths first — if anything below this fails we keep a way in.
+# Standard AL2023 ships both packages; installing explicitly also covers the
+# minimal AMI (which has neither — the reason SSM never registered on the
+# first bastion). dnf is a no-op when they are already present.
+dnf -y install amazon-ssm-agent ec2-instance-connect || true
 systemctl enable --now amazon-ssm-agent || true
 
 # (2) Packages we actually need. NO dnf update — it triggers a known
@@ -28,11 +31,25 @@ iptables -A FORWARD -d 10.8.0.0/24 -j ACCEPT
 iptables-save > /etc/sysconfig/iptables
 systemctl enable --now iptables
 
-# easy-rsa from upstream (not in AL2023 default repos).
+# easy-rsa from upstream (not in AL2023 default repos). It runs as root and
+# creates the VPN CA, so the archive is pinned by SHA-256 and verified before
+# extraction. The hash was taken from the release tarball after checking its
+# GPG signature (EasyRSA-3.1.7.tgz.sig, key C8FCA3E7F787072CDEB91D2F72964219390D0D0E,
+# Eric F Crist / OpenVPN). To bump: download .tgz + .sig, `gpg --verify`,
+# `sha256sum`, update both values below.
 EASYRSA_VERSION=3.1.7
+EASYRSA_SHA256=aaa48fadcbb77511b9c378554ef3eae09f8c7bc149d6f56ba209f1c9bab98c6e
 if [ ! -d /etc/openvpn/easy-rsa/pki ]; then
-  curl -sL "https://github.com/OpenVPN/easy-rsa/releases/download/v${EASYRSA_VERSION}/EasyRSA-${EASYRSA_VERSION}.tgz" \
-    | tar -xz -C /etc/openvpn
+  EASYRSA_TGZ=/tmp/EasyRSA-${EASYRSA_VERSION}.tgz
+  # -f: fail on HTTP errors instead of saving an error page as the archive.
+  if ! curl -fsSL --retry 3 -o "${EASYRSA_TGZ}" \
+      "https://github.com/OpenVPN/easy-rsa/releases/download/v${EASYRSA_VERSION}/EasyRSA-${EASYRSA_VERSION}.tgz" \
+    || ! echo "${EASYRSA_SHA256}  ${EASYRSA_TGZ}" | sha256sum -c -; then
+    echo "FATAL: easy-rsa download failed or checksum mismatch; OpenVPN not configured" >&2
+    exit 1 # SSM / Instance Connect are already up for debugging
+  fi
+  tar -xzf "${EASYRSA_TGZ}" -C /etc/openvpn
+  rm -f "${EASYRSA_TGZ}"
   ln -sfn "/etc/openvpn/EasyRSA-${EASYRSA_VERSION}" /etc/openvpn/easy-rsa
 
   cd /etc/openvpn/easy-rsa

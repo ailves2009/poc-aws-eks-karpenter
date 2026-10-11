@@ -107,8 +107,8 @@ resource "aws_iam_role_policy" "cicd_cloudtrail_policy" {
           "kms:DescribeKey"
         ],
         Resource = [
-          "arn:aws:kms:*:${var.region}:key/*",
-          "arn:aws:kms:*:${var.region}:alias/cloudtrail-*"
+          "arn:aws:kms:*:${var.account}:key/*",
+          "arn:aws:kms:*:${var.account}:alias/cloudtrail-*"
         ]
       },
       {
@@ -128,8 +128,8 @@ resource "aws_iam_role_policy" "cicd_cloudtrail_policy" {
           "logs:CreateLogStream"
         ],
         Resource = [
-          "arn:aws:logs:*:${var.region}:log-group:/aws/cloudtrail/*",
-          "arn:aws:logs:*:${var.region}:log-group:/aws/cloudtrail/*:*"
+          "arn:aws:logs:*:${var.account}:log-group:/aws/cloudtrail/*",
+          "arn:aws:logs:*:${var.account}:log-group:/aws/cloudtrail/*:*"
         ]
       },
       {
@@ -154,8 +154,8 @@ resource "aws_iam_role_policy" "cicd_cloudtrail_policy" {
           "iam:PassRole"
         ],
         Resource = [
-          "arn:aws:iam::${var.region}:role/CloudTrail-*",
-          "arn:aws:iam::${var.region}:role/*cloudtrail*"
+          "arn:aws:iam::${var.account}:role/CloudTrail-*",
+          "arn:aws:iam::${var.account}:role/*cloudtrail*"
         ]
       },
       {

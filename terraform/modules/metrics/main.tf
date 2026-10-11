@@ -2,29 +2,26 @@
 
 provider "helm" {
   kubernetes = {
-    host                   = var.kube_host
-    cluster_ca_certificate = var.kube_ca
+    host = var.kube_host
+    # var.kube_ca is base64 (as EKS returns it); the provider expects PEM.
+    cluster_ca_certificate = base64decode(var.kube_ca)
     token                  = var.kube_token
   }
 }
 
 resource "helm_release" "metrics" {
   name       = "metrics"
-  repository = "https://kubernetes-sigs.github.io/metrics-server"
+  repository = var.metrics_server_helm_repo
   chart      = "metrics-server"
   version    = var.metrics_server_helm_version
   namespace  = var.metrics_server_namespace
   wait       = true
 
-  # Use list-style `set` argument expected by helm provider (array of maps).
+  # List-style `set` (helm provider 3.x), built from var.metrics_server_settings.
   set = [
-    {
-      name  = "args[0]"
-      value = "--kubelet-insecure-tls"
-    },
-    {
-      name  = "args[1]"
-      value = "--kubelet-preferred-address-types=InternalIP"
+    for name, value in var.metrics_server_settings : {
+      name  = name
+      value = value
     }
   ]
 }

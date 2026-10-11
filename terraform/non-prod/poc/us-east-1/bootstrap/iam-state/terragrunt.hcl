@@ -1,43 +1,17 @@
-# /envs/main/poc/bootstrap/iam-state/terragrunt.hcl
+# /non-prod/poc/us-east-1/bootstrap/iam-state/terragrunt.hcl
+
+include "bootstrap" {
+  path = find_in_parent_folders("bootstrap.hcl")
+}
 
 locals {
   account_vars = read_terragrunt_config(find_in_parent_folders("account.hcl"))
   region_vars  = read_terragrunt_config(find_in_parent_folders("region.hcl"))
   region       = local.region_vars.locals.aws_region
-  tags         = local.account_vars.locals.tags
 }
 
 terraform {
   source = "../../../../../modules/iam-state"
-}
-
-generate "backend" {
-  path      = "backend.tf"
-  if_exists = "overwrite"
-  contents  = <<EOF
-terraform {
-  backend "local" {}
-}
-EOF
-}
-
-generate "providers" {
-  path      = "providers.tf"
-  if_exists = "overwrite"
-  contents  = <<EOF
-provider "aws" {
-  region  = "${local.region}"
-  default_tags {
-    tags = {
-      Env         = "${local.tags["Env"]}"
-      Client      = "${local.tags["Client"]}"
-      Managed     = "${local.tags["Managed"]}"
-      Project     = "${local.tags["Project"]}"
-      Github      = "${local.tags["Github"]}"
-    }
-  }  
-}
-EOF
 }
 
 inputs = {
@@ -49,4 +23,5 @@ inputs = {
   managed_role_names        = local.account_vars.locals.managed_role_names
   permissions_boundary_name = "cicd-boundary"
   secrets_path_prefix       = local.account_vars.locals.account_name
+  tags                      = local.account_vars.locals.tags
 }
