@@ -1,0 +1,8 @@
+apiVersion: v2
+name: poc-lib
+description: >-
+  Library chart: renders one service (Deployment, Service, Ingress, HPA,
+  ServiceAccount) from `applications.<activeApp>` deep-merged over `common`.
+  Consumed by umbrella charts; renders nothing on its own.
+type: library
+version: 0.1.0

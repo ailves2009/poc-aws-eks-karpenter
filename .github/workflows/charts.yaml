@@ -1,0 +1,58 @@
+name: charts
+
+on:
+  pull_request:
+    paths: ["charts/**", ".github/workflows/charts.yaml"]
+  push:
+    branches: [master]
+    paths: ["charts/**", ".github/workflows/charts.yaml"]
+
+permissions:
+  contents: read
+
+env:
+  HELM_VERSION: v3.16.2
+  KUBECONFORM_VERSION: v0.6.7
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: azure/setup-helm@v5
+        with:
+          version: ${{ env.HELM_VERSION }}
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install test tools (pinned)
+        run: |
+          pip install pyyaml==6.0.2
+          curl -fsSL "https://github.com/yannh/kubeconform/releases/download/${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz" \
+            | tar xz -C /usr/local/bin kubeconform
+
+      - name: Contract tests (render invariants + must-fail cases)
+        run: python3 charts/tests/contract_test.py
+
+      - name: kubeconform -strict on every service render
+        run: |
+          set -euo pipefail
+          digest="sha256:$(printf '0%.0s' $(seq 64))"
+          for chart in charts/*/; do
+            [ -f "$chart/Chart.yaml" ] || continue                 # charts/tests/
+            grep -q '^type: library' "$chart/Chart.yaml" && continue
+            helm dependency build "$chart" >/dev/null
+            for shape in "$chart"values/*.yaml; do
+              svc=$(basename "$shape" .yaml)
+              echo "::group::$(basename "$chart")/$svc"
+              helm template "$svc" "$chart" --set activeApp="$svc" -f "$shape" \
+                --set "applications.$svc.image.repository=example.invalid/$svc" \
+                --set "applications.$svc.image.tag=ci" \
+                --set "applications.$svc.image.digest=$digest" \
+                | kubeconform -strict -summary
+              echo "::endgroup::"
+            done
+          done

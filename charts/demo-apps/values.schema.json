@@ -1,0 +1,145 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "demo-apps values",
+  "description": "Validated by Helm against the merged values (chart values.yaml + values/<service>.yaml + environment files + --set) before any template renders. Unknown keys are errors: a typo fails the Argo CD sync instead of silently falling back to a default.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["activeApp", "applications"],
+  "properties": {
+    "activeApp": {
+      "description": "Service to render; set by the ApplicationSet as a Helm parameter.",
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]{0,40}$"
+    },
+    "global": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "partOf": { "type": "string" },
+        "environment": { "type": "string", "enum": ["dev", "staging", "prod"] }
+      }
+    },
+    "chart": {
+      "description": "Read by the workloads ApplicationSet (which chart and git tag render this service); ignored by the templates.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "revision"],
+      "properties": {
+        "path": { "type": "string", "pattern": "^charts/[a-z0-9-]+$" },
+        "revision": { "type": "string", "minLength": 1 }
+      }
+    },
+    "common": { "$ref": "#/definitions/app" },
+    "applications": {
+      "type": "object",
+      "propertyNames": { "pattern": "^[a-z][a-z0-9-]{0,40}$" },
+      "additionalProperties": { "$ref": "#/definitions/app" }
+    },
+    "poc-lib": {
+      "description": "Reserved by Helm for the library dependency's values; unused.",
+      "type": "object"
+    }
+  },
+  "definitions": {
+    "app": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "fullnameOverride": { "type": "string", "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$", "maxLength": 63 },
+        "image": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["repository", "tag", "digest"],
+          "properties": {
+            "repository": { "type": "string", "minLength": 1 },
+            "tag": { "type": "string", "minLength": 1 },
+            "digest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" }
+          }
+        },
+        "replicas": { "type": "integer", "minimum": 0 },
+        "command": { "type": "array", "items": { "type": "string" } },
+        "args": { "type": "array", "items": { "type": "string" } },
+        "env": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["name"],
+            "properties": { "name": { "type": "string" } }
+          }
+        },
+        "containerPort": { "type": "integer", "minimum": 1, "maximum": 65535 },
+        "service": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["port"],
+          "properties": { "port": { "type": "integer", "minimum": 1, "maximum": 65535 } }
+        },
+        "readinessProbe": { "type": "object" },
+        "livenessProbe": { "type": "object" },
+        "resources": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "requests": { "$ref": "#/definitions/resourceList" },
+            "limits": { "$ref": "#/definitions/resourceList" }
+          }
+        },
+        "podSecurityContext": { "type": "object" },
+        "securityContext": { "type": "object" },
+        "automountServiceAccountToken": { "type": "boolean" },
+        "serviceAccount": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "create": { "type": "boolean" },
+            "annotations": { "type": "object", "additionalProperties": { "type": "string" } }
+          }
+        },
+        "nodeSelector": { "type": "object", "additionalProperties": { "type": "string" } },
+        "tolerations": { "type": "array", "items": { "type": "object" } },
+        "topologySpreadConstraints": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["maxSkew", "topologyKey", "whenUnsatisfiable"],
+            "properties": {
+              "maxSkew": { "type": "integer", "minimum": 1 },
+              "topologyKey": { "type": "string" },
+              "whenUnsatisfiable": { "enum": ["DoNotSchedule", "ScheduleAnyway"] }
+            }
+          }
+        },
+        "volumes": { "type": "array", "items": { "type": "object", "required": ["name"] } },
+        "volumeMounts": { "type": "array", "items": { "type": "object", "required": ["name", "mountPath"] } },
+        "ingress": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "className": { "type": "string" },
+            "host": { "type": "string", "format": "hostname" },
+            "annotations": { "type": "object", "additionalProperties": { "type": "string" } }
+          }
+        },
+        "autoscaling": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "minReplicas": { "type": "integer", "minimum": 1 },
+            "maxReplicas": { "type": "integer", "minimum": 1 },
+            "targetCPU": { "type": "integer", "minimum": 1, "maximum": 100 }
+          }
+        }
+      }
+    },
+    "resourceList": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "cpu": { "type": ["string", "integer"] },
+        "memory": { "type": "string" }
+      }
+    }
+  }
+}

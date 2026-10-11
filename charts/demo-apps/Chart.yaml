@@ -1,0 +1,15 @@
+apiVersion: v2
+name: demo-apps
+description: >-
+  Umbrella chart for the demo services (nginx, keepwarm). Carries the shape of each
+  service in values/<service>.yaml; environment values live in poc-eks-gitops-values.
+  One render = one service, selected by the mandatory `activeApp` parameter.
+type: application
+version: 1.0.0
+
+dependencies:
+  # Phase 1: the library ships in the same commit, so the umbrella always renders with the
+  # library it was tested with. Phase 2 publishes poc-lib to GHCR (OCI) with its own versions.
+  - name: poc-lib
+    version: 0.1.0
+    repository: file://../poc-lib

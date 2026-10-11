@@ -112,6 +112,10 @@ cd -
 
 ## 5. Remaining workload units
 
+> **Since 0.3.0** metrics-server and the nginx demo are deployed by Argo CD and these two
+> units no longer exist: apply only `vpc` and `aws-lb-controller` here, then follow
+> [gitops-argocd.md](gitops-argocd.md).
+
 ```bash
 for u in vpc aws-lb-controller metrics-server nginx; do (cd $U/workload/$u && terragrunt apply); done
 ```

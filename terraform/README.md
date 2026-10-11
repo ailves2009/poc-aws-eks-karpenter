@@ -114,7 +114,7 @@ kubectl get node <node> -o jsonpath='{.metadata.labels}' | jq            # arch 
 # expect: kubernetes.io/arch=arm64, karpenter.sh/capacity-type=spot
 ```
 
-The same `nodeSelector` pattern is used by the demo nginx app — see [`non-prod/poc/us-east-1/workload/nginx/terragrunt.hcl`](non-prod/poc/us-east-1/workload/nginx/terragrunt.hcl) for a real Helm-managed example with HPA driving Karpenter scale-up.
+The same `nodeSelector` pattern is used by the demo nginx service — see `workloads/dev/demo/nginx.yaml` in [poc-eks-gitops-values](https://github.com/ailves2009/poc-eks-gitops-values) for a real GitOps-managed example with HPA driving Karpenter scale-up.
 
 ---
 
@@ -131,7 +131,8 @@ terraform/
 │   ├── eks/                       # thin wrapper over terraform-aws-modules/eks/aws
 │   ├── karpenter/                 # eks/aws//modules/karpenter + Helm + EC2NodeClass/NodePool (vendored chart)
 │   ├── aws-lb-controller/         # IRSA + Helm release of aws-load-balancer-controller
-│   └── helm-release/              # generic helm_release wrapper for app charts (nginx, metrics-server)
+│   ├── argocd/                    # Argo CD (Helm) + the root app-of-apps Application
+│   └── helm-release/              # generic helm_release wrapper (unused since 0.3.0: apps are GitOps)
 └── non-prod/                      # environment classification
     └── poc/                       # AWS account
         ├── account.hcl            # account-level vars (id, role names, tags, bucket)
@@ -147,9 +148,12 @@ terraform/
                 ├── eks/
                 ├── karpenter/
                 ├── aws-lb-controller/
-                ├── metrics-server/
-                └── nginx/         # demo app: Helm + HPA + Ingress (HTTP) + keepwarm
+                └── argocd/        # Argo CD + root app; everything else Argo CD deploys is GitOps
 ```
+
+Outside `terraform/`: [`charts/`](../charts) holds the Helm charts Argo CD deploys (`poc-lib`
+library + `demo-apps` umbrella). metrics-server and the nginx demo are no longer Terraform units —
+see [GitOps with Argo CD](#gitops-with-argo-cd).
 
 Hierarchy reads as `env → account → region → tier → unit`. Tier separation is by **lifecycle**, not by feature: bootstrap once, persistent rarely, workload often. Scoped runs:
 
@@ -209,14 +213,119 @@ Pod Identity Agent (`eks-pod-identity-agent` addon) is installed and ready to se
 
 ---
 
+## GitOps with Argo CD
+
+Terraform builds the platform (VPC, EKS, IAM/IRSA, Karpenter, AWS Load Balancer Controller) and
+installs **Argo CD with one root Application**. Everything Argo CD deploys after that comes from
+git: three small repositories plus the charts in this one.
+
+```text
+ Terraform (this repo)                 GitHub
+ ──────────────────────                ──────────────────────────────────────────────────────────
+ workload/argocd                       poc-eks-gitops-root        "what & where"
+  ├─ helm_release argo-cd 10.9.2        clusters/poc-plt-eks/
+  └─ root Application ──recurse,──────►  ├─ 00-projects.yaml        Application  (wave -1) ──┐
+        prune, selfHeal                   ├─ 10-infra-appset.yaml    list gen.    (wave 0)    │
+                                          └─ 20-workloads-appset.yaml git files gen.(wave 1)  │
+                                                                                            │
+                                       poc-eks-gitops-projects    "who may do what"  ◄──────┘
+                                         projects/{infra-poc-plt-eks,demo}.yaml  (AppProject)
+
+                                       poc-eks-gitops-values      "with which parameters"
+                                         infra/poc-plt-eks/metrics-server.yaml
+                                         workloads/dev/demo/{_env,nginx,keepwarm}.yaml
+
+                                       poc-aws-eks-karpenter/charts   "how it renders"
+                                         poc-lib (library)  +  demo-apps (umbrella)   @ git tag
+```
+
+| Repository | Owns | Synced by | Sync |
+|---|---|---|---|
+| [poc-eks-gitops-root](https://github.com/ailves2009/poc-eks-gitops-root) | ApplicationSets, the `projects` Application | root Application (Terraform) | auto, prune |
+| [poc-eks-gitops-projects](https://github.com/ailves2009/poc-eks-gitops-projects) | AppProjects: source repos, destinations, kind whitelists, roles, sync windows | `projects` Application | auto, prune |
+| [poc-eks-gitops-values](https://github.com/ailves2009/poc-eks-gitops-values) | values per cluster / environment; one service file = one Application | ApplicationSets (as `$values` source / git files generator) | — |
+| this repo, [`charts/`](../charts) | `poc-lib` library + `demo-apps` umbrella | Applications (chart source, by git tag) | — |
+
+### How a service gets deployed
+
+1. **Shape** in the chart: `charts/demo-apps/values/<service>.yaml` (ports, probes, resources).
+2. **Environment** in the values repo: `workloads/<env>/<app>/<service>.yaml` — `chart.path`,
+   `chart.revision` (git tag), image **by digest**, HPA, ingress, placement.
+3. The workloads ApplicationSet (git files generator) creates Application
+   `<app>-<env>-<service>` in namespace `<app>-<env>`, project `<app>`, rendering
+   `values.yaml < values/<svc>.yaml < _env.yaml < <svc>.yaml < activeApp=<svc>`.
+4. The chart's `values.schema.json` validates every layer; `poc-lib` refuses to render
+   without `activeApp` — one render, one service.
+
+Infra components (metrics-server) use a **list** generator instead: adding one is a pull
+request to the root repo, under platform control; the chart version is pinned in the element.
+
+### Design decisions
+
+Built on a common enterprise layout (Argo CD hub, separate root / settings / values
+repositories, a shared library chart consumed by umbrella charts), keeping its strengths and
+fixing its usual weak spots:
+
+| Common weak spot | In this POC |
+|---|---|
+| Cross-repo **merge order** (project → values → root) kept by discipline; a slip gives "project not found" | **Sync waves** (projects −1, infra 0, workloads 1) + CI in the root repo fails when a referenced or path-derived AppProject is missing |
+| Root with `prune: false`: objects deleted from git live on | Root and projects **auto + prune**; workloads protected by `preserveResourcesOnDeletion` on the ApplicationSets instead |
+| Settings app synced by hand — a sync drags in other people's merged-but-unsynced changes | AppProjects auto-synced from their own repo, ordered by wave |
+| No pre-merge validation; ApplicationSet template bugs surface on the cluster | CI in every repo: `kubeconform -strict` against **real** Argo CD CRD schemas, full renders of every service file with the chart tag it names |
+| `templatePatch` that wraps only `automated:` renders `syncPolicy: null` and wipes the syncPolicy | The `if` wraps the whole patch (see `10-infra-appset.yaml`) |
+| Library schema not enforced (values sit outside the library's subtree) and permissive (`additionalProperties: true`) | **Strict `values.schema.json` in the umbrella**: unknown keys, an image without a digest or `targetCPU: 500` fail the render |
+| Service shape merged in-template via `.Files.Glob` — invisible to the schema, to `helm get values` and to Argo CD | Shape passed as an explicit `valueFiles` entry — every layer is visible and validated |
+| `activeApp` optional: without it every service renders and global collections leak into every Application | `required` in the library + `pattern` in the schema; contract test asserts the render fails |
+| Deep merge through `toYaml \| fromYaml` (type coercion), two spellings for many keys | `mergeOverwrite` on `deepCopy`, one spelling per key |
+| Library versions bumped by grepping the merge-commit subject; never a major | Phase 1: library ships in the same commit (`file://`). Phase 2: Conventional Commits + release-please, golden-render diff, cosign |
+| CI tools fetched at `latest`, hand-written fixture schemas | Pinned tool versions; generated CRD schemas |
+
+Contract tests ([`charts/tests/contract_test.py`](../charts/tests/contract_test.py)) render every
+service and assert: one Deployment, selector ⊆ pod labels, Service selects the pods and targets a
+declared port, image pinned by digest, non-root, no privilege escalation, read-only root FS, no
+auto-mounted SA token — and that renders without `activeApp`, with an unknown key or without a
+digest **fail**.
+
+### Access
+
+No Ingress for Argo CD in the POC (no public endpoint):
+
+```bash
+kubectl -n argocd port-forward svc/argocd-server 8080:80          # → http://localhost:8080
+kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath='{.data.password}' | base64 -d
+```
+
+Default policy `role:readonly`; project roles (`operator`, `developer`) grant `get` + `sync`.
+
+### Roadmap (phase 2)
+
+- **ACK** (AWS Controllers for Kubernetes): per-service AWS resources (S3, SQS…) declared in the
+  service's values and rendered by a separate `aws` part of the library — with
+  `deletionPolicy: retain` / `Prune=false` for stateful resources and unique-name rules
+  (`create`-only, no silent adoption). ACK controllers + IRSA installed via the infra ApplicationSet.
+- **CRD lifecycle in GitOps**: CRDs as their own Applications/charts (as already done for
+  Karpenter in Terraform), earlier sync waves, `ServerSideApply`, `Replace` for large CRDs.
+- **Karpenter and the LB controller to GitOps** (role ARNs from Terraform outputs into values).
+- **poc-lib to GHCR (OCI)**: release-please (Conventional Commits) → Release PR → tag →
+  `helm push` + cosign keyless signature; Renovate bumps consumers with a golden-render diff.
+- **Argo CD manages itself** after bootstrap; **Notifications** on `SyncFailed`/`Degraded`.
+- **Hub-spoke**: a separate hub cluster registering spokes through IAM (`awsAuthConfig` + EKS
+  access entries with a minimal policy) instead of long-lived cluster-admin tokens.
+- HA mode (repo-server replicas, controller sharding); Kyverno policies; Argo CD Image Updater or
+  Kargo for promotion between environments.
+
+---
+
 ## Prerequisites
 
 - AWS account with an IAM user `terraform` (long-lived access keys).
 - AWS CLI profile `ae-nyd-plt-init` configured with that user's keys (`~/.aws/config` + `~/.aws/credentials`).
 - Terraform >= 1.10 (or OpenTofu >= 1.8).
-- Terragrunt >= 0.69.
-- `kubectl`, `helm` (for cluster operations later).
-- **DNS for the demo Ingress**: external. The nginx Ingress matches Host header = `nginx.${var.domain_name}`. After `apply`, get the ALB DNS from `kubectl get ingress -n demo nginx` and create a CNAME in whatever Route53 zone you own — or test via `curl --resolve` (see Testing methodology). **No Route53 zone is created in this account.**
+- Terragrunt >= 1.0 (the `run --all` CLI).
+- `kubectl`, `helm` (cluster operations, local chart renders); `gh` (GitHub CLI) for the GitOps repositories.
+- Python 3 + PyYAML — only to run the chart contract tests locally (`charts/tests/contract_test.py`).
+- The three GitOps repositories ([root](https://github.com/ailves2009/poc-eks-gitops-root), [projects](https://github.com/ailves2009/poc-eks-gitops-projects), [values](https://github.com/ailves2009/poc-eks-gitops-values)) on GitHub, public (Argo CD reads them without credentials), and the chart tag `demo-apps-v1.0.0` in this repo.
+- **DNS for the demo Ingress**: external. The nginx Ingress matches Host header = `nginx.${var.domain_name}`. After `apply`, get the ALB DNS from `kubectl get ingress -n demo-dev nginx` and create a CNAME in whatever Route53 zone you own — or test via `curl --resolve` (see Testing methodology). **No Route53 zone is created in this account.**
 
 The `terraform` IAM user needs permissions to bootstrap: create the IAM role, the boundary policy, and the S3 bucket. After bootstrap, the user is only ever used to assume `cicd-deployment-role`.
 
@@ -235,13 +344,19 @@ The first run is a two-step process because `cicd-deployment-role` and the S3 st
 AWS_PROFILE=ae-nyd-plt-init terragrunt run --all apply \
   --working-dir non-prod/poc/us-east-1/bootstrap
 
-# Step 2 — main layer (uses the freshly created bucket and AssumeRole)
+# Step 2 — main layer (uses the freshly created bucket and AssumeRole).
+# The last unit, workload/argocd, installs Argo CD + the root Application; Argo CD then
+# deploys metrics-server and the demo from the GitOps repositories on its own.
 AWS_PROFILE=ae-nyd-plt-init terragrunt run --all apply
 ```
 
+Applications are not deployed by Terraform: after Step 2 watch them converge with
+`kubectl -n argocd get applications` (all `Synced / Healthy` within a few minutes). For a
+migration of an existing pre-0.3.0 deployment use [runbooks/gitops-argocd.md](runbooks/gitops-argocd.md).
+
 ### Subsequent deploys
 
-After bootstrap, the regular workflow is one command. Bootstrap is idempotent and won't recreate anything:
+After bootstrap, infrastructure changes are one command. Bootstrap is idempotent and won't recreate anything. Application changes (images, replicas, new services) are **not** Terraform: they are pull requests to [poc-eks-gitops-values](https://github.com/ailves2009/poc-eks-gitops-values), applied by Argo CD.
 
 ```bash
 AWS_PROFILE=ae-nyd-plt-init terragrunt run --all plan
@@ -313,7 +428,8 @@ Verifies every component is alive before exercising it.
 kubectl get nodes -L topology.kubernetes.io/zone -L node.kubernetes.io/instance-type -L kubernetes.io/arch
 
 # (b) system pods — all Running: coredns, kube-proxy, aws-node (vpc-cni),
-#     eks-pod-identity-agent, karpenter (×2), metrics-server (×1)
+#     eks-pod-identity-agent, karpenter (×2), aws-load-balancer-controller (×2),
+#     metrics-server (×1, deployed by Argo CD), argocd-* (×5)
 kubectl get pods -A
 
 # (c) cluster RBAC — cicd-deployment-role should hold ClusterAdmin via Access Entry
@@ -326,8 +442,14 @@ kubectl get ec2nodeclass,nodepool
 kubectl top nodes
 kubectl top pods -A | head -10
 
-# (f) Ingress + ALB — should have CLASS=alb, ADDRESS=k8s-...elb.amazonaws.com
-kubectl get ingress -n demo
+# (f) Ingress + ALB — should have CLASS=alb, ADDRESS=k8s-demodev-nginx-...elb.amazonaws.com
+kubectl get ingress -n demo-dev
+
+# (g) GitOps — root, projects, infra-poc-plt-eks-metrics-server, demo-dev-nginx,
+#     demo-dev-keepwarm: all Synced / Healthy
+kubectl -n argocd get applications -o custom-columns='NAME:.metadata.name,SYNC:.status.sync.status,HEALTH:.status.health.status'
+#     multi-source Applications report revisions in .status.sync.revisions (plural):
+kubectl -n argocd get application demo-dev-nginx -o jsonpath='{.status.sync.revisions}{"\n"}'
 ```
 
 ### 0.5. End-to-end through the ALB
@@ -335,8 +457,8 @@ kubectl get ingress -n demo
 The nginx Ingress is reachable as `http://<hostname>/` where `<hostname>` is `nginx.${var.domain_name}` (default `nginx.poc-eks-karpenter.domain.xyz`). POC has no real DNS in this account, so test with `curl --resolve` to bypass DNS:
 
 ```bash
-ALB=$(kubectl get ingress -n demo nginx -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
-HOST=$(kubectl get ingress -n demo nginx -o jsonpath='{.spec.rules[0].host}')
+ALB=$(kubectl get ingress -n demo-dev nginx -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+HOST=$(kubectl get ingress -n demo-dev nginx -o jsonpath='{.spec.rules[0].host}')
 ALB_IP=$(dig +short "$ALB" | head -1)
 
 curl -sI --resolve "$HOST:80:$ALB_IP" "http://$HOST/"
@@ -390,11 +512,11 @@ kubectl delete pod pause-arm pause-amd
 
 ### Test 2 — HPA + Karpenter cascade under load
 
-Full POC story: realistic CPU-bound workload (`workload/nginx` with `autoscaling.targetCPU=50`) → HPA scales pods → Karpenter scales nodes.
+Full POC story: realistic CPU-bound workload (nginx from `charts/demo-apps`, `autoscaling.targetCPU=50` in `workloads/dev/demo/nginx.yaml` of the values repo) → HPA scales pods → Karpenter scales nodes.
 
 #### Setup
 
-`workload/nginx` is configured with:
+nginx is configured with (chart shape `charts/demo-apps/values/nginx.yaml` + environment file `workloads/dev/demo/nginx.yaml`):
 - `requests.cpu = 500m`, `limits.cpu = 1000m` — sized so 10 replicas (5 vCPU) exceed the capacity of 2 spot nodes (~4 vCPU). Forces Karpenter to provision additional capacity.
 - `autoscaling.minReplicas=2, maxReplicas=10, targetCPU=50` — scale up when avg CPU > 250m per pod.
 - `nodeSelector: karpenter.sh/capacity-type=spot` — bootstrap NG cannot host these pods.
@@ -405,9 +527,9 @@ Full POC story: realistic CPU-bound workload (`workload/nginx` with `autoscaling
 In one terminal:
 ```bash
 watch -n 2 '
-echo "=== HPA ==="; kubectl get hpa -n demo;
+echo "=== HPA ==="; kubectl get hpa -n demo-dev;
 echo;
-echo "=== Nginx pods ==="; kubectl get pods -n demo -l app.kubernetes.io/name=nginx -o wide --no-headers;
+echo "=== Nginx pods ==="; kubectl get pods -n demo-dev -l app.kubernetes.io/name=nginx -o wide --no-headers;
 echo;
 echo "=== Spot nodes ==="; kubectl get nodes -L karpenter.sh/capacity-type --no-headers | grep spot;
 echo;
@@ -420,8 +542,8 @@ echo "=== NodeClaims ==="; kubectl get nodeclaim --no-headers
 `fortio` produces sustained, controllable concurrency — far better than busybox `wget` loops which are sequential per pod.
 
 ```bash
-kubectl run fortio -n demo --image=fortio/fortio --restart=Never -- \
-  load -c 200 -qps 0 -t 10m http://nginx.demo.svc.cluster.local/
+kubectl run fortio -n demo-dev --image=fortio/fortio --restart=Never -- \
+  load -c 200 -qps 0 -t 10m http://nginx.demo-dev.svc.cluster.local/
 ```
 
 - `-c 200` — 200 concurrent connections.
@@ -431,8 +553,8 @@ kubectl run fortio -n demo --image=fortio/fortio --restart=Never -- \
 For even more intensity, run multiple busybox loops in parallel alongside fortio (as a quick "spam" generator):
 ```bash
 for i in 1 2 3 4 5; do
-  kubectl run -n demo "loadgen-$i" --image=busybox:1.38.0 --restart=Never -- \
-    /bin/sh -c "while sleep 0.005; do wget -q -O- http://nginx.demo.svc.cluster.local; done" &
+  kubectl run -n demo-dev "loadgen-$i" --image=busybox:1.38.0 --restart=Never -- \
+    /bin/sh -c "while sleep 0.005; do wget -q -O- http://nginx.demo-dev.svc.cluster.local; done" &
 done
 ```
 
@@ -459,7 +581,7 @@ done
 
 Stop load:
 ```bash
-kubectl delete pod -n demo loadgen-{1..5} fortio --ignore-not-found
+kubectl delete pod -n demo-dev loadgen-{1..5} fortio --ignore-not-found
 ```
 
 Watch the unwind (this exercises consolidation, the second Karpenter superpower):
@@ -473,10 +595,13 @@ Watch the unwind (this exercises consolidation, the second Karpenter superpower)
 
 #### Tear down the demo entirely
 
+The demo is GitOps-managed: remove its service files from
+[poc-eks-gitops-values](https://github.com/ailves2009/poc-eks-gitops-values)
+(`workloads/dev/demo/{nginx,keepwarm}.yaml`) and push. The Applications disappear, but the
+workloads are preserved by design (`preserveResourcesOnDeletion`), so delete them explicitly:
+
 ```bash
-cd non-prod/poc/us-east-1/workload/nginx
-AWS_PROFILE=ae-nyd-plt-init terragrunt destroy
-# Helm release uninstalled, demo namespace removed, all spot nodes consolidated.
+kubectl delete namespace demo-dev   # Deployments, HPA, Ingress (→ the ALB) go; spot nodes consolidate
 ```
 
 ### Where Karpenter-managed nodes appear in the AWS Console
@@ -592,7 +717,6 @@ Custom-from-scratch is reserved for things that are simple enough to own (`iam-s
 - Observability stack (Prometheus, Grafana, Loki).
 - Centralized logging, alerting (PagerDuty / OpsGenie).
 - Service mesh.
-- GitOps (ArgoCD / Flux).
 - Multi-environment beyond `non-prod/poc/`.
 
 ---
@@ -603,14 +727,23 @@ Custom-from-scratch is reserved for things that are simple enough to own (`iam-s
 
 `cicd-deployment-role` ([modules/iam-state](modules/iam-state/main.tf)) can grant itself admin rights. It can rewrite its own managed policies (`CreatePolicyVersion` / `SetDefaultPolicyVersion` on `policy/*`). The permissions boundary `cicd-boundary` is `Allow *`, so a role it creates with `AdministratorAccess` attached is effectively admin. It can also set or remove boundaries on any role. This is accepted for the POC and **must be fixed before prod** (see [Roadmap to production](#roadmap-to-production)).
 
+### Argo CD access is local admin + port-forward (POC only)
+
+No Ingress and no SSO: the UI and API are reached with `kubectl port-forward`, and the local
+`admin` account's password is in `argocd-initial-admin-secret` (a new one on every rebuild). For
+anything beyond a POC: an OIDC/SSO connector bound to the project roles, `admin.enabled: false`,
+and an internal Ingress.
+
 ### Runbooks
 
 - [runbooks/upgrade-0.2.0.md](runbooks/upgrade-0.2.0.md): upgrade the deployed POC to 0.2.0 (Karpenter 1.15, EKS 1.37).
 - [runbooks/bastion-access.md](runbooks/bastion-access.md): rebuild the bastion, SSH, SSM, OpenVPN client config.
+- [runbooks/gitops-argocd.md](runbooks/gitops-argocd.md): install Argo CD, publish the GitOps repositories, hand metrics-server and the demo over to Argo CD (0.3.0).
+- [runbooks/hibernate.md](runbooks/hibernate.md): put the POC into deep sleep (≈ $1–5/month) and wake it up with one command.
 
 ### No Bitnami charts
 
-Since mid-2025 Bitnami restricted free-tier access to `docker.io/bitnami/*` and froze the old images under `docker.io/bitnamilegacy/*` (no security updates). Bitnami charts only work with Bitnami images, so the nginx demo uses a small local chart instead — [`charts/nginx-demo`](charts/nginx-demo) — with the official `nginxinc/nginx-unprivileged` image pinned by tag + digest. Its selector labels match the old bitnami release, so `helm upgrade` switched charts in place. Avoid bitnami charts for new components.
+Since mid-2025 Bitnami restricted free-tier access to `docker.io/bitnami/*` and froze the old images under `docker.io/bitnamilegacy/*` (no security updates). Bitnami charts only work with Bitnami images, so the demo uses its own charts instead — [`charts/demo-apps`](../charts/demo-apps) on the [`poc-lib`](../charts/poc-lib) library — with the official `nginxinc/nginx-unprivileged` image pinned by tag + digest. Avoid bitnami charts for new components.
 
 ### EKS Spot service-linked role
 
@@ -622,7 +755,7 @@ Since mid-2025 Bitnami restricted free-tier access to `docker.io/bitnami/*` and 
 
 - **Karpenter chart vendored locally**. The chart `oci://public.ecr.aws/karpenter/karpenter` is pre-pulled into `modules/karpenter/charts/karpenter-<version>.tgz` and committed. Done because `helm provider v3` re-authenticates against OCI on every `plan`, and the auth token (TTL 12h from `data.aws_ecrpublic_authorization_token`) frequently fails with `403 expired` on subsequent applies. CRDs come from a separate vendored `karpenter-crd` chart (Helm never upgrades a chart's `crds/` directory). To bump the version: `helm pull oci://public.ecr.aws/karpenter/karpenter --version <X.Y.Z> --destination modules/karpenter/charts/` **and** the same for `oci://public.ecr.aws/karpenter/karpenter-crd`, update `var.karpenter_chart_version`, check the [upgrade guide](https://karpenter.sh/docs/upgrading/upgrade-guide/) for new controller IAM permissions (add them to `iam_policy_statements`), commit. Runtime image pulls (`public.ecr.aws/karpenter/controller`) are anonymous and unaffected. Tracked at https://github.com/hashicorp/terraform-provider-helm
 - **Cross-account DNS automation**. The authoritative zone (`example.com`) is in a different AWS account from where the workload runs. Currently the operator manually adds CNAMEs. Two options to automate: (a) cross-account IAM trust — give this account a role in the DNS account that lets it `route53:ChangeResourceRecordSets` on `*.poc.example.com`; deploy `external-dns` here pointing at that role. (b) `external-dns` running in DNS account, watching the workload account's resources via cross-account read of LB addresses. (a) is more idiomatic. Once done, drop `--resolve` from the test methodology and use `curl http://$HOST/` directly.
-- **HTTPS / ACM cert + real domain**. The demo Ingress on nginx is **HTTP-only**. ACM DNS-validation requires the cert's domain to be delegated to a Route53 zone in this AWS account; in the original POC neither candidate domain qualified (corp parent zone wasn't delegate-able; the personal alternative lived in a different AWS account). To enable HTTPS for prod: either (a) cross-account delegate a subdomain to this account's Route53 (NS records pointing at this account's nameservers), add a `persistent/acm` unit that issues a wildcard cert via DNS validation, and add the HTTPS listener back to `nginx/terragrunt.hcl`; or (b) provision the cert externally and import via `aws_acm_certificate.import_*`.
+- **HTTPS / ACM cert + real domain**. The demo Ingress on nginx is **HTTP-only**. ACM DNS-validation requires the cert's domain to be delegated to a Route53 zone in this AWS account; in the original POC neither candidate domain qualified (corp parent zone wasn't delegate-able; the personal alternative lived in a different AWS account). To enable HTTPS for prod: either (a) cross-account delegate a subdomain to this account's Route53 (NS records pointing at this account's nameservers), add a `persistent/acm` unit that issues a wildcard cert via DNS validation, and add the HTTPS listener (`alb.ingress.kubernetes.io/listen-ports`, `certificate-arn`) to the ingress annotations in `workloads/dev/demo/nginx.yaml` of the values repo; or (b) provision the cert externally and import via `aws_acm_certificate.import_*`.
 - Bumping bootstrap node group `min_size`/`desired_size` after first apply requires a manual `aws eks update-nodegroup-config` because the upstream module (`terraform-aws-modules/eks/aws`) `ignore_changes = [scaling_config[0].desired_size]` on the managed NG. Workflow: AWS CLI to raise desired, then `terragrunt apply` for min/max. Document or wrap this in a small helper if it becomes routine.
 - **Bastion SSM agent registration**: root cause found. The AMI filter matched `al2023-ami-minimal-*`, which has no `amazon-ssm-agent` and no `ec2-instance-connect`. The filter is fixed and cloud-init installs both packages. The deployed instance still has to be rebuilt; see [runbooks/bastion-access.md](runbooks/bastion-access.md).
 - `workload/external-dns` (optional — auto-creates Route53 records for Service/Ingress). Limited utility while DNS is in another account; would need cross-account write permissions.
@@ -630,6 +763,7 @@ Since mid-2025 Bitnami restricted free-tier access to `docker.io/bitnami/*` and 
 - **Remove `AmazonEKS_CNI_Policy` from node IAM roles** now that VPC CNI uses Pod Identity. Currently the policy is still attached on the bootstrap node group (upstream module default) and on the Karpenter node role (`node_iam_role_attach_cni_policy = true` in [modules/karpenter/main.tf](modules/karpenter/main.tf)). Until removed, CNI gets credentials from two sources — Pod Identity works, but the security win (no CNI permissions reachable via IMDS from a compromised pod) is not realized. Sequence: confirm Pod Identity is healthy → flip the flag to `false` → apply → spot-check that `aws-node` still works.
 - VPC peering between bastion VPC (default) and workload VPC, so VPN clients can reach EKS workers.
 - Switch EKS endpoint to private-only after VPN is validated.
+- **`modules/helm-release`** is unused since 0.3.0 (applications are deployed by Argo CD): delete it, or keep it only for ad-hoc charts outside GitOps.
 - **Migrate bootstrap state from local backend to S3** after deploy stabilizes. `bootstrap/iam-state` and `bootstrap/s3-state` use `backend "local"` with the state file next to each unit's `terragrunt.hcl` (gitignored; configured in [`bootstrap/bootstrap.hcl`](non-prod/poc/us-east-1/bootstrap/bootstrap.hcl)), so clearing `.terragrunt-cache` is safe — but the files exist only on one laptop. Back them up until migrated.
 
 ---
@@ -648,3 +782,4 @@ Since mid-2025 Bitnami restricted free-tier access to `docker.io/bitnami/*` and 
 - Multi-env via separate AWS accounts (Organizations) and matching `account.hcl` per env.
 - OPA / Kyverno admission policies, NetworkPolicies, Secrets Manager / Vault for app secrets.
 - Replace default VPC for bastion with a dedicated platform VPC.
+- GitOps phase 2 — ACK, CRD lifecycle, Karpenter / LB controller via Argo CD, `poc-lib` in GHCR with release-please + cosign, self-managed Argo CD, Notifications, hub-spoke: see [GitOps with Argo CD → Roadmap](#roadmap-phase-2).

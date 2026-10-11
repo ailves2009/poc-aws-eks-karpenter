@@ -334,6 +334,8 @@ This is the **same pattern proven in the [Terraform POC](../terraform/)** — th
 
   Pull-based: cluster credentials never leave the cluster, the CI account has no `kubectl` permissions.
 
+  > **Implemented in the POC (phase 1):** Argo CD bootstrapped by Terraform with one root app-of-apps, three GitOps repositories (root / projects / values), a library chart + umbrella chart with a strict values schema, CI renders of every environment file. See [terraform/README.md → GitOps with Argo CD](../terraform/README.md#gitops-with-argo-cd). Argo Rollouts and image-tag promotion are on its phase-2 roadmap.
+
 ---
 
 ## 4. Database — PostgreSQL
