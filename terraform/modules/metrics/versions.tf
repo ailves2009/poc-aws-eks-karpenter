@@ -1,6 +1,6 @@
 # modules/metrics/versions.tf
 # NOTE: legacy module, not referenced by any terragrunt unit
-# (metrics-server is deployed via modules/helm-release).
+# (metrics-server is deployed by Argo CD — see poc-eks-gitops-root).
 
 terraform {
   required_version = ">= 1.10"

@@ -131,8 +131,7 @@ terraform/
 │   ├── eks/                       # thin wrapper over terraform-aws-modules/eks/aws
 │   ├── karpenter/                 # eks/aws//modules/karpenter + Helm + EC2NodeClass/NodePool (vendored chart)
 │   ├── aws-lb-controller/         # IRSA + Helm release of aws-load-balancer-controller
-│   ├── argocd/                    # Argo CD (Helm) + the root app-of-apps Application
-│   └── helm-release/              # generic helm_release wrapper (unused since 0.3.0: apps are GitOps)
+│   └── argocd/                    # Argo CD (Helm) + the root app-of-apps Application
 └── non-prod/                      # environment classification
     └── poc/                       # AWS account
         ├── account.hcl            # account-level vars (id, role names, tags, bucket)
@@ -708,7 +707,7 @@ For production prefer `nodeAffinity` over `nodeSelector` — gives soft/hard pre
 
 `vpc`, `eks`, `karpenter`, `aws-lb-controller` are **thin local wrappers** around the community modules at https://github.com/terraform-aws-modules — battle-tested, prod-quality. The local module fixes project conventions (tags, naming, boundary attachment, region pinning, vendoring of charts); the upstream module does the heavy lifting (security groups, addons, IAM, edge cases).
 
-Custom-from-scratch is reserved for things that are simple enough to own (`iam-state`, `s3-state`, `bastion`, `helm-release`).
+Custom-from-scratch is reserved for things that are simple enough to own (`iam-state`, `s3-state`, `bastion`, `argocd`).
 
 ---
 
@@ -763,7 +762,6 @@ Since mid-2025 Bitnami restricted free-tier access to `docker.io/bitnami/*` and 
 - **Remove `AmazonEKS_CNI_Policy` from node IAM roles** now that VPC CNI uses Pod Identity. Currently the policy is still attached on the bootstrap node group (upstream module default) and on the Karpenter node role (`node_iam_role_attach_cni_policy = true` in [modules/karpenter/main.tf](modules/karpenter/main.tf)). Until removed, CNI gets credentials from two sources — Pod Identity works, but the security win (no CNI permissions reachable via IMDS from a compromised pod) is not realized. Sequence: confirm Pod Identity is healthy → flip the flag to `false` → apply → spot-check that `aws-node` still works.
 - VPC peering between bastion VPC (default) and workload VPC, so VPN clients can reach EKS workers.
 - Switch EKS endpoint to private-only after VPN is validated.
-- **`modules/helm-release`** is unused since 0.3.0 (applications are deployed by Argo CD): delete it, or keep it only for ad-hoc charts outside GitOps.
 - **Migrate bootstrap state from local backend to S3** after deploy stabilizes. `bootstrap/iam-state` and `bootstrap/s3-state` use `backend "local"` with the state file next to each unit's `terragrunt.hcl` (gitignored; configured in [`bootstrap/bootstrap.hcl`](non-prod/poc/us-east-1/bootstrap/bootstrap.hcl)), so clearing `.terragrunt-cache` is safe — but the files exist only on one laptop. Back them up until migrated.
 
 ---

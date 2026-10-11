@@ -47,7 +47,8 @@ in all four repositories.
 ### Removed
 
 - Units `workload/metrics-server`, `workload/nginx` and `terraform/charts/nginx-demo`.
-  `modules/helm-release` stays for ad-hoc charts but is no longer used.
+  `modules/helm-release` (the generic `helm_release` wrapper they used) removed as well:
+  applications are deployed by Argo CD, not by Terraform.
 
 ## 0.2.0 — Review fixes: Karpenter 1.15, EKS 1.37, bastion access
 

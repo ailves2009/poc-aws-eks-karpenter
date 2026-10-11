@@ -96,3 +96,4 @@ with a **new ALB DNS name**.
 | `vpc` destroy fails: `DependencyViolation` | an ENI/SG left by an ALB or a node | step 2/3 skipped: delete the leftover ALB / instance, re-run destroy |
 | namespace `demo-dev` stays `Terminating` | the LB controller was destroyed before the Ingress | `kubectl patch ingress -n demo-dev nginx -p '{"metadata":{"finalizers":[]}}' --type=merge`, then delete the ALB by hand |
 | `karpenter` destroy hangs | NodeClaims waiting for a terminated controller | step 3 first; otherwise terminate the instances tagged `karpenter.sh/nodepool` and remove the finalizers |
+| `karpenter` destroy: `DeleteConflict` on the node role | an instance profile Karpenter created for the EC2NodeClass still holds the role | `aws iam list-instance-profiles-for-role --role-name <Karpenter-poc-plt-eks-…>`, then `remove-role-from-instance-profile` + `delete-instance-profile`, re-run destroy |
