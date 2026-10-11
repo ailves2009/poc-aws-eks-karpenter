@@ -3,6 +3,38 @@
 Reverse-chronological log of structural / behavioural changes. Bug fixes that
 don't change behaviour aren't listed unless they shaped the design.
 
+## 0.3.0 — Argo CD and GitOps (phase 1)
+
+### Added
+
+- **Argo CD** (chart argo-cd 10.9.2 = v3.5.3) installed by the new `modules/argocd` /
+  `workload/argocd` unit, together with one **root Application** (app-of-apps, auto + prune +
+  selfHeal, no cascade on delete). UI through `kubectl port-forward` only.
+- **Three GitOps repositories** (branch `master`):
+  [poc-eks-gitops-root](https://github.com/ailves2009/poc-eks-gitops-root) (ApplicationSets,
+  sync waves), [poc-eks-gitops-projects](https://github.com/ailves2009/poc-eks-gitops-projects)
+  (AppProjects with kind whitelists, roles, sync window),
+  [poc-eks-gitops-values](https://github.com/ailves2009/poc-eks-gitops-values) (values per cluster /
+  environment; one service file = one Application).
+- **`charts/poc-lib`** library chart and **`charts/demo-apps`** umbrella: one render = one service
+  (`activeApp` is `required`), strict `values.schema.json` validating every values layer, images
+  by digest, restricted securityContext by default.
+- **CI**: contract tests + `kubeconform -strict` for the charts; CRD-schema validation and a
+  cross-repo AppProject check in the root repo; full renders of every service file in the values
+  repo.
+- Runbooks [`gitops-argocd.md`](runbooks/gitops-argocd.md) and [`hibernate.md`](runbooks/hibernate.md).
+
+### Changed
+
+- **metrics-server** (chart 3.12.2 → 3.14.0) and the **nginx demo** moved from Terraform units to
+  Argo CD. metrics-server is adopted in place; the demo moves from namespace `demo` to `demo-dev`
+  (`<app>-<env>`), with `keepwarm` as a service of its own.
+
+### Removed
+
+- Units `workload/metrics-server`, `workload/nginx` and `terraform/charts/nginx-demo`.
+  `modules/helm-release` stays for ad-hoc charts but is no longer used.
+
 ## 0.2.0 — Review fixes: Karpenter 1.15, EKS 1.37, bastion access
 
 ### Security
