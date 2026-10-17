@@ -11,3 +11,7 @@ Cloud platform proposal and proof-of-concept for a Python/Flask + React + Postgr
 GitOps configuration lives in three companion repositories — [poc-eks-gitops-root](https://github.com/ailves2009/poc-eks-gitops-root) (what & where), [poc-eks-gitops-projects](https://github.com/ailves2009/poc-eks-gitops-projects) (who may do what) and [poc-eks-gitops-values](https://github.com/ailves2009/poc-eks-gitops-values) (with which parameters); see [terraform/README.md → GitOps with Argo CD](terraform/README.md#gitops-with-argo-cd).
 
 Each directory is independently navigable from this root via the README inside it. License: MIT (see [LICENSE](LICENSE)).
+
+## Related
+
+[poc-aws-eks-auto](https://github.com/ailves2009/poc-aws-eks-auto) builds the same NGINX + HTTPS + node/pod autoscaling scenario on **Amazon EKS Auto Mode**, where AWS runs Karpenter, load balancing and Pod Identity for you. Read the two side by side to compare what you operate yourself here with what AWS runs for you there.
